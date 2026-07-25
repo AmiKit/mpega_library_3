@@ -1,0 +1,34 @@
+# Build intermediates (see Makefile / Makefile.aros)
+*.o
+mad.stmp
+elfobject.elf
+elfobject.o
+mpega_68k_os4.o
+
+# Transient library output before the Makefile renames it to .040/.elf/.pup/.os4/.aros_x86
+/mpega.library
+
+# Regression harness: fixtures and expected/ ARE tracked; only local scratch is not.
+# The harness builds into $MPEGA_BUILD_DIR (/tmp by default), not into the repo.
+tests/**/*.o
+tests/decode_ref
+*.pcm
+
+# On-Amiga benchmark binary (make bench)
+/mpegabench
+
+# Scratch folder of things to copy to the Amiga for a benchmark run
+/bench-build/
+
+# OS / editor cruft
+.DS_Store
+*~
+*.bak
+
+# Build products stay out of git: variants are rebuilt from source, release
+# archives are published as GitHub release assets. The upstream-imported 2004
+# binaries (mpega.library.040 etc.) remain tracked as provenance.
+/mpega.library-bugfix
+/mpega.library-hifi
+/mpega.library-hifi-forced
+/release/

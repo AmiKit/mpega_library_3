@@ -1,0 +1,26 @@
+# The harness scripts are executed by bash (under WSL on Windows). With
+# core.autocrlf=true they would otherwise be checked out with CRLF, which bash
+# rejects ("bad interpreter" / syntax errors). Pin them to LF.
+*.sh text eol=lf
+
+# The vendored libmad sources take patches straight from upstream libmad
+# 0.16.x. With core.autocrlf=true, any file rewritten on
+# Windows comes back CRLF, and `patch` or `git apply` of an upstream hunk
+# against a CRLF file then fails outright or leaves mixed endings behind. It
+# also makes a raw diff against an upstream extraction report every line as
+# changed. One rewrite left four files CRLF while the rest of mad/ stayed LF.
+# Pin the lot.
+mad/* text eol=lf
+
+# Baselines are diffed line by line; keep them stable across platforms.
+tests/expected/*.txt text eol=lf
+tests/fixtures/SHA256SUMS text eol=lf
+
+# Test fixtures and prebuilt libraries are binary -- never touch line endings.
+*.mp3 binary
+*.mp2 binary
+*.lha binary
+*.png binary
+*.jpg binary
+mpega.library-* binary
+mpega.library.* binary

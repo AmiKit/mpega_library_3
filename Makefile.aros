@@ -1,0 +1,44 @@
+CC = i386-linux-aros-gcc
+
+CC_OPTS = -O2 -fomit-frame-pointer -nostartfiles $(CFLAGS)
+CPP_OPTS = -I./mad -DHAVE_CONFIG_H -DNDEBUG $(FPM) -Iinclude_aros
+MAD_OPTS = -Wall -O -fforce-mem -fforce-addr -fthread-jumps -fcse-follow-jumps -fcse-skip-blocks -fexpensive-optimizations -fregmove -fstrength-reduce -fschedule-insns2 -fbranch-count-reg $(CFLAGS)
+RM = rm -f
+MV = mv -f
+
+PROGNAME = mpega.library
+
+LIB_SRC = library_init_aros.c
+LIB_OBJ = $(LIB_SRC:.c=.o)
+
+PUP_SRC = support_pup.c
+PUP_OBJ = $(PUP_SRC:.c=.o)
+
+WRAP_SRC = support.c wrap_mpega.c
+WRAP_OBJ = $(WRAP_SRC:.c=.o)
+
+MAD_SRC = mad/filter.c mad/resample.c mad/tag.c mad/crc.c mad/fixed.c mad/bit.c mad/timer.c mad/stream.c mad/frame.c mad/synth.c mad/layer12.c mad/layer3.c mad/huffman.c
+MAD_OBJ = $(MAD_SRC:.c=.o)
+
+%.o: %.c 
+	$(CC) $(CPP_OPTS) $(CC_OPTS) -c $< -o $@
+
+all: $(PROGNAME)_AROS_x86
+
+mad_build: $(MAD_OBJ)
+
+mad.stmp:
+	$(MAKE) -f Makefile.aros mad_build "CC_OPTS = \$$(MAD_OPTS)"
+
+$(PROGNAME): mad.stmp $(LIB_OBJ) $(WRAP_OBJ)
+	$(CC) -o $@ $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ) $(ADD_OBJ) $(CC_OPTS)
+
+$(PROGNAME)_AROS_x86: 
+	$(MAKE) -f Makefile.aros $(PROGNAME) "FPM = -DFPM_INTEL -DOPT_ACCURACY -DBUILD_AROS"
+	i386-linux-aros-strip --strip-unneeded --remove-section .comment $(PROGNAME)
+	-$(MV) $(PROGNAME) $(PROGNAME).aros_x86
+	-$(RM) $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ)
+
+clean:
+	-$(RM) $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ) $(STARTUP_OBJ)
+
