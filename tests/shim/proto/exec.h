@@ -15,6 +15,5 @@
 ULONG InitSupport(void);
 void  RemoveSupport(void);
 
-ULONG CallHookPkt(struct Hook *hook, APTR object, APTR paramPacket);
 
 #endif /* PROTO_EXEC_H */

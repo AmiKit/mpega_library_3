@@ -135,6 +135,17 @@ typedef mad_fixed_t mad_sample_t;
 
 #  define MAD_F_SCALEBITS  MAD_F_FRACBITS
 
+/*
+ * mpega Hi-Fi fork: two bits of headroom in the long-block IMDCT (dctIV in
+ * layer3.c) and in the synthesis DCT (dct32 in synth.c). Their intermediate
+ * sums ran past Q28's +-8.0 on MP3s that decode to more than about twice full
+ * scale (a loud track made louder with MP3Gain, say): wrapped values, loud
+ * crackle. The shifted-out bits are far below the 16-bit output. FPM_DEFAULT
+ * (-bugfix) multiplies with only 16 bits kept and would lose them, so it
+ * stays at 0.
+ */
+#  define MAD_F_HEADROOM  2
+
 /* --- Intel --------------------------------------------------------------- */
 
 # elif defined(FPM_INTEL)
@@ -453,8 +464,9 @@ mad_fixed_t mad_f_mul_inline(mad_fixed_t x, mad_fixed_t y)
  * twice.
  *
  * Defining MAD_F_MLX additionally enables OPT_DCTO in mad/synth.c, which is
- * gated on "defined(OPT_SPEED) && defined(MAD_F_MLX)" and has therefore been
- * dead in every variant this fork has ever shipped.
+ * gated on "defined(OPT_SPEED) && defined(MAD_F_MLX)"; that left it dead in
+ * every variant this fork shipped before 3.1, whose Hi-Fi flavours use its Q31
+ * cosines through their own FPM_64BIT branch there.
  *
  * MAD_F_MLN, MAD_F_MLZ and mad_f_mul are deliberately left to the generic
  * definitions below; they are already correct for a hi/lo pair and honour
@@ -617,6 +629,10 @@ mad_fixed_t mad_f_mul_inline(mad_fixed_t x, mad_fixed_t y)
       ((lo) >> MAD_F_SCALEBITS)))
 #  endif
 #  define MAD_F_SCALEBITS  MAD_F_FRACBITS
+# endif
+
+# if !defined(MAD_F_HEADROOM)
+#  define MAD_F_HEADROOM  0
 # endif
 
 /* C routines */

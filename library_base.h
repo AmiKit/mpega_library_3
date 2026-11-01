@@ -6,26 +6,6 @@
 #include <exec/execbase.h>
 #include <proto/dos.h>
 
-#ifdef BUILD_POWERUP
-struct StartupData
-{
-	APTR ElfObject;
-};
-
-struct CallPPCData
-{
-	ULONG Type;
-	ULONG PPCLVO;
-	ULONG Args[3];
-	ULONG Return;
-};
-
-#define MSGTYPE_INIT 1
-#define MSGTYPE_REMOVE 2
-#define MSGTYPE_CALL 3
-#define MSGTYPE_HELLO 4
-#define MSGTYPE_GOODBYE 5
-#else
 struct MyStackSwapStruct
 {
 	struct StackSwapStruct stack;
@@ -114,34 +94,16 @@ struct MyStackSwapStruct
  * DecHandles, separate blocks. MPEGA_close refuses to free a block that is
  * still claimed rather than pulling a live stack out from under its owner.
  *
- * A caller that had enough stack at open time gets no block at all (NULL);
- * decode_frame/seek then allocate per call, exactly as before.
+ * A caller that had enough stack at open time gets no block from the open; the
+ * first decode_frame or seek that has to swap allocates one and attaches it to
+ * the stream, claimed, so later calls reuse it.
  */
-#endif
 
 struct PrivateBase {
 	struct Library pv_Lib;
 	UWORD pv_Pad;
 
-	struct ExecBase *pv_SysBase;
-	struct DosLibrary *pv_DOSBase;
 	BPTR pv_SegList;
-
-#ifdef BUILD_POWERUP
-	struct Library *pv_PPCLibBase;
-	APTR pv_ElfObject;
-	APTR pv_LibFuncTable;
-	APTR pv_ReplyPort;
-	APTR pv_StartupMsg;
-	struct StartupData *pv_StartupData;
-	APTR pv_Task;
-	APTR pv_PPCPort;
-	APTR pv_CallPPCMsg;
-	struct CallPPCData *pv_CallPPCData;
-	struct PrivateBase *ParentBase;
-#else
-	struct MyStackSwapStruct stackswap;
-#endif
 };
 
 #endif

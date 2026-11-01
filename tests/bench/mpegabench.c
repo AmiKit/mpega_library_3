@@ -34,101 +34,13 @@
 #include <proto/dos.h>
 
 #include <libraries/mpega.h>
+#include "../mpega_calls.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 struct Library *MPEGABase = NULL;
-
-/*
- * Library call stubs.
- *
- * include_aros/clib/mpega_protos.h is AROS-only (it pulls aros/libcall.h), and
- * mpega.library is third-party so amiga-gcc ships no proto header for it. The
- * offsets and register assignment come straight from mpega.fd: "##bias 30",
- * six bytes per entry, in declaration order.
- *
- *     -30 MPEGA_open(filename a0, ctrl a1)
- *     -36 MPEGA_close(mpds a0)
- *     -42 MPEGA_decode_frame(mpds a0, pcm a1)
- *     -48 MPEGA_seek(mpds a0, ms d0)
- *     -54 MPEGA_time(mpds a0, ms_ptr a1)
- *
- * a0 and a1 are declared "+r", i.e. READ AND WRITTEN.
- *
- * That detail is the whole reason the first version of this benchmark failed
- * after exactly one frame. On AmigaOS d0/d1/a0/a1 are scratch: the callee is
- * free to destroy them. Declaring a0/a1 as inputs only left gcc believing they
- * still held the stream and the pcm array afterwards, so on the second turn of
- * the decode loop it reused the register contents instead of reloading them,
- * and passed garbage. The library's own argument check then rejected the call
- * with MPEGA_ERR_BADVALUE, or, with a different code layout, it crashed.
- *
- * They cannot go in the clobber list instead: gcc 4 and later reject clobbering
- * an operand register, which is the rule the library's own CALLHOOK had to be
- * corrected for. An operand that the callee destroys has to be an OUTPUT.
- * d1 is not an operand, so it belongs in the clobber list.
- *
- * a2-a6 and d2-d7 are callee-saved on Amiga and need neither treatment.
- *
- * a4 is left alone. The library's entry points take an a4base in a4 for the
- * caller's bs_access hook; we pass no hook, so it is never dereferenced.
- */
-
-static __inline MPEGA_STREAM *MPEGA_open(char *name, MPEGA_CTRL *ctrl)
-{
-    register struct Library *b   __asm("a6") = MPEGABase;
-    register MPEGA_STREAM   *res __asm("d0");
-    register char           *nm  __asm("a0") = name;
-    register MPEGA_CTRL     *ct  __asm("a1") = ctrl;
-
-    __asm volatile ("jsr a6@(-30)"
-                    : "=r" (res), "+r" (nm), "+r" (ct)
-                    : "r" (b)
-                    : "d1", "cc", "memory");
-    return res;
-}
-
-static __inline void MPEGA_close(MPEGA_STREAM *s)
-{
-    register struct Library *b   __asm("a6") = MPEGABase;
-    register LONG            res __asm("d0");
-    register MPEGA_STREAM   *st  __asm("a0") = s;
-
-    __asm volatile ("jsr a6@(-36)"
-                    : "=r" (res), "+r" (st)
-                    : "r" (b)
-                    : "d1", "a1", "cc", "memory");
-}
-
-static __inline LONG MPEGA_decode_frame(MPEGA_STREAM *s, WORD **pcm)
-{
-    register struct Library *b   __asm("a6") = MPEGABase;
-    register LONG            res __asm("d0");
-    register MPEGA_STREAM   *st  __asm("a0") = s;
-    register WORD          **pc  __asm("a1") = pcm;
-
-    __asm volatile ("jsr a6@(-42)"
-                    : "=r" (res), "+r" (st), "+r" (pc)
-                    : "r" (b)
-                    : "d1", "cc", "memory");
-    return res;
-}
-
-static __inline LONG MPEGA_time(MPEGA_STREAM *s, ULONG *ms)
-{
-    register struct Library *b   __asm("a6") = MPEGABase;
-    register LONG            res __asm("d0");
-    register MPEGA_STREAM   *st  __asm("a0") = s;
-    register ULONG          *mp  __asm("a1") = ms;
-
-    __asm volatile ("jsr a6@(-54)"
-                    : "=r" (res), "+r" (st), "+r" (mp)
-                    : "r" (b)
-                    : "d1", "cc", "memory");
-    return res;
-}
 
 /* Static, not on the stack: 4.5 KB of buffers would eat into the headroom the
    library's stack-swap logic is deciding about, and skew what we are measuring. */
@@ -177,7 +89,7 @@ static void init_ctrl(MPEGA_CTRL *ctrl, int force_mono)
 /* One decode of the whole file. Returns elapsed ticks, or -1 on failure.
    ms_out receives the decoded duration so we can report a realtime factor. */
 static long one_pass(const char *file, int force_mono, ULONG *ms_out,
-                     long *frames_out, MPEGA_STREAM **info_out, int verbose)
+                     long *frames_out, int verbose)
 {
     MPEGA_CTRL ctrl;
     MPEGA_STREAM *s;
@@ -189,8 +101,6 @@ static long one_pass(const char *file, int force_mono, ULONG *ms_out,
 
     s = MPEGA_open((char *)file, &ctrl);
     if (!s) return -1;
-
-    if (info_out) *info_out = s;
 
     if (verbose) {
         printf("stream  : norm=%d layer=%d mode=%d bitrate=%d freq=%ld ch=%d\n",
@@ -267,7 +177,7 @@ int main(int argc, char **argv)
     }
     if (passes < 1) passes = 1;
 
-    MPEGABase = OpenLibrary("mpega.library", 2);
+    MPEGABase = OpenLibrary((STRPTR)"mpega.library", 2);
     if (!MPEGABase) {
         printf("cannot open mpega.library version 2 or higher\n");
         return RETURN_FAIL;
@@ -298,14 +208,14 @@ int main(int argc, char **argv)
     /* One warm-up pass: the first run pays for the file cache and for any
        one-time allocation, and we are measuring steady-state decoding. It is
        also the verbose one, so a failure is diagnosed rather than just timed. */
-    if (one_pass(file, force_mono, &ms, &frames, NULL, 1) < 0) {
+    if (one_pass(file, force_mono, &ms, &frames, 1) < 0) {
         printf("cannot open the stream (not an MPEG audio file?)\n");
         CloseLibrary(MPEGABase);
         return RETURN_FAIL;
     }
 
     for (i = 0; i < passes; i++) {
-        long t = one_pass(file, force_mono, &ms, &frames, NULL, 0);
+        long t = one_pass(file, force_mono, &ms, &frames, 0);
 
         if (t < 0) { printf("pass %d failed\n", i + 1); continue; }
 

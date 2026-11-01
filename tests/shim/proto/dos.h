@@ -12,7 +12,6 @@
 BPTR Open(const char *name, LONG accessMode);
 LONG Close(BPTR file);
 LONG Read(BPTR file, void *buffer, LONG length);
-LONG Write(BPTR file, const void *buffer, LONG length);
 LONG Seek(BPTR file, LONG position, LONG mode);
 BOOL ExamineFH(BPTR file, struct FileInfoBlock *fib);
 LONG IoErr(void);

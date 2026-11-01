@@ -3,7 +3,6 @@
  *
  * Backs the handful of AmigaOS calls wrap_mpega.c actually makes:
  *   dos.library : Open, Close, Read, Seek, ExamineFH, IoErr, SetIoErr
- *   utility     : CallHookPkt
  *   support.c   : InitSupport / RemoveSupport (see tests/README.md for why
  *                 support.c itself is not compiled here)
  *   string      : bcopy / bzero, which the library expects to exist globally
@@ -36,6 +35,13 @@ static LONG shim_ioerr = 0;
  * 0 = unlimited (normal file behaviour).
  */
 LONG shim_max_read = 0;
+
+/* Bytes Read() has delivered so far; decode_ref --openbytes reports it when
+   the open returns, to show how much data the open waits for. */
+LONG shim_bytes_read = 0;
+
+/* decode_ref --failread=N: the Nth Read() fails once, without reading. */
+LONG shim_fail_read = 0;
 
 /*
  * BPTR is 32-bit on AmigaOS, so it cannot hold a host FILE *. Hand out small
@@ -88,6 +94,7 @@ LONG Read(BPTR file, void *buffer, LONG length)
 
     if (!f) { shim_ioerr = 205; return -1; }
     if (length <= 0) return 0;
+    if (shim_fail_read > 0 && --shim_fail_read == 0) { shim_ioerr = 205; return -1; }
 
     if (shim_max_read > 0 && length > shim_max_read) length = shim_max_read;
 
@@ -96,16 +103,7 @@ LONG Read(BPTR file, void *buffer, LONG length)
     if (n == 0 && ferror(f)) { shim_ioerr = 205; return -1; }
 
     shim_ioerr = 0;
-    return (LONG)n;
-}
-
-LONG Write(BPTR file, const void *buffer, LONG length)
-{
-    FILE  *f = fh_of(file);
-    size_t n;
-
-    if (!f) { shim_ioerr = 205; return -1; }
-    n = fwrite(buffer, 1, (size_t)length, f);
+    shim_bytes_read += (LONG)n;
     return (LONG)n;
 }
 
@@ -152,13 +150,6 @@ BOOL ExamineFH(BPTR file, struct FileInfoBlock *fib)
 
     shim_ioerr = 0;
     return TRUE;
-}
-
-ULONG CallHookPkt(struct Hook *hook, APTR object, APTR paramPacket)
-{
-    typedef ULONG (*hookfn)(struct Hook *, APTR, APTR);
-    if (!hook || !hook->h_Entry) return 0;
-    return ((hookfn)hook->h_Entry)(hook, object, paramPacket);
 }
 
 /* support.c is not part of the harness; the library only needs these to exist. */

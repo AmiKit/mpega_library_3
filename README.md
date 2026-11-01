@@ -1,211 +1,139 @@
 # mpega.library
 
-![mpega.library Hi-Fi Edition (AmiKit)](mpega-hifi-box.png)
+![mpega.library 3](mpega-hifi-box.png)
 
-A faster, bugfixed version of S. Skjæret's & G. Steger's [libmad edition of
+A new version of mpega.library by Ján Zahurančík, based on S. Skjæret's &
+G. Steger's [libmad edition of
 mpega.library](https://aminet.net/util/libs/mpega_libmad.lha) for AmigaOS 3
-(68020), with an optional **Hi-Fi** decode. It is a drop-in replacement,
-so every player just works. Copy one file to `LIBS:` and you are done.
+(68020). It decodes MPEG audio (layers I, II and III) with libmad. Programs
+that use mpega.library (AmigaAMP, AMPlifier, TKPlayer, ...) work unchanged:
+just replace the library.
+
+**VERSION 3 COMES IN THREE FLAVOURS:**
+
+- **`-bugfix`** (`mpega.library-bugfix`): the original decoder, just fixed.
+  It no longer crashes or freezes where the old one did: with some players
+  (those that give it little memory to work in), on MP3s with a loudness
+  (ReplayGain) tag, on damaged files. Music streamed from the network
+  plays to the end. Every track plays to its very last note. Mono keeps
+  both channels. Jumping within a track lands where you asked. Very loud
+  MP3s (made louder with MP3Gain, say) still crackle, as they always did;
+  `-hifi` plays them.
+
+- **`-hifi`** (`mpega.library-hifi`): every fix of `-bugfix`, and on top of
+  that it calculates with much higher precision, so the music comes out
+  cleaner, and MP3s that were made louder than a CD allows still play
+  without crackle. It needs about 1.5 times the CPU of `-bugfix` on a real
+  Amiga (2 to 3 times in emulation, where there is CPU to spare), and it
+  follows the player's settings (quality, frequency, mono, volume,
+  loudness tag).
+
+- **`-hifi-forced`** (`mpega.library-hifi-forced`): the `-hifi` decoder,
+  always at the highest quality. Some players ask for lower quality or a
+  lower sample rate to save CPU; this one ignores that, and it ignores the
+  loudness tag, so you always hear the file as it was made. Volume and mono
+  still work. It also plays through small errors in a file instead of
+  stopping. For fast Amigas and emulation.
+
+All three flavours contain every fix; they differ only in how they decode.
 
 ## Installation
 
-Pick **one** of the three editions below and copy it to `LIBS:` under the name
-`mpega.library`, overwriting the old one (back it up first if you want to keep
-it), then **reboot your Amiga**:
+Requires AmigaOS 3 and a 68020 or faster CPU. Well, rather faster one,
+definitely. No FPU required.
 
-```
-Copy mpega.library-hifi-forced LIBS:mpega.library
-```
+1. Copy your preferred flavour (see above) to `LIBS:mpega.library`,
+   replacing the old one (keep a backup if you like).
+2. Reboot, or quit your player and run `Avail FLUSH` so that the new
+   library is loaded.
 
-That is all. Start your favourite MP3 player and listen: there is nothing to
-configure, and you do not need to touch your AHI or player settings.
+Nothing to configure: your player and AHI settings stay as they are.
+`version LIBS:mpega.library` shows which flavour is installed, e.g.
+`[020] [Hi-Fi] [64bit]`.
 
-Check what is installed with `version LIBS:mpega.library`; the edition is shown
-in brackets, e.g. `[020] [Hi-Fi] [64bit]`.
+## Speed
 
-## What is new in this release
+CPU needed to play an ordinary 128 kb/s stereo MP3 at full quality; above
+100 % the music stutters.
 
-CISC's original libmad-based clone is a faithful, bugfixed decoder for
-AmigaOS 3. This fork keeps that foundation and goes through the
-whole 020 build: two dozen real bugs fixed, an optional full-precision Hi-Fi
-decode, and hardening against damaged or malicious files, without giving up
-any speed. The three editions all share one source tree; only two build-time
-switches separate them.
+- 68020: measured (in WinUAE with exact timing, scaled to the clock). A
+  68030 at the same clock does a little better.
+- 68040 and 68060: estimated; the real numbers are, if anything, lower.
 
-### IT IS FASTER
+| CPU | 2004 original | 2026 `-bugfix` | 2026 `-hifi` | |
+|---|---|---|---|---|
+| 68020 at 50 MHz | 370 % | 370 % | 550 % | measured |
+| 68040 at 40 MHz | 80 % | 80 % | 115 % | estimated |
+| 68060 at 50 MHz | 40 % | 40 % | 60 % | estimated |
 
-Same API, same players, same files: just faster. Swap one file in `LIBS:`
-and the `-bugfix` edition decodes **10-25 % more audio per CPU second** than
-the 2004 `mpega.library` 2.4.
+- On a real Amiga `-bugfix` is as fast as the original.
+- In emulation (measured in WinUAE) `-bugfix` is up to 25 % faster than
+  the original.
+- On a 68020 or 68030 your player lowers the quality or the sample rate,
+  as it always did, and `-bugfix` and `-hifi` go along with it.
+- In emulation there is CPU to spare: take `-hifi` there.
 
-### AN OPTIONAL HI-FI DECODE
+## Accuracy
 
-`-hifi` carries every multiply at full 64-bit precision through libmad's
-`FPM_64BIT` path: an **~18 dB lower arithmetic noise floor** than the
-speed-optimized decode. It is the most accurate decode this library can
-produce.
+- Four full tracks were decoded with `-hifi` and compared, sample by
+  sample, with ffmpeg, the decoder most computers use.
+- The output never differs by more than one step of the 65 536 a 16-bit
+  output has, before the dither it adds on purpose (a trace of noise, as on
+  every CD); far below anything you can hear.
+- Every track plays to its very last note; the 2004 original cuts the end
+  of each one short.
+- Also tested with the players above, two of them playing at once.
 
-That precision costs real CPU: the Hi-Fi editions are **4.5-6× slower than
-the 2004 original**, still above 15× realtime on AmiKit, so emulated and
-accelerated machines will not notice, but a stock 68020 will. `-hifi-forced`
-uses the identical decoder but always decodes at maximum fidelity, ignoring
-any player request that would lower quality; see below for exactly what that
-means.
+| Track | Kind of MP3 | Result |
+|---|---|---|
+| AmiKit X13 theme | variable bitrate, 48 kHz | matches |
+| AmiKit X13 theme (remix) | variable bitrate, 48 kHz, very loud | matches |
+| Sundial Aeon - Startup Sequence | 320 kb/s, with a loudness tag | matches |
+| The Future Sound of London - Smokin Japanese Babe | 128 kb/s, the usual kind | matches |
 
-**Measure before you commit to it.** `tests/bench/mpegabench` prints a
-realtime factor, and anything near 1.00× means the machine cannot keep up.
+## What was fixed
 
-### EVERY EDITION CONTAINS EVERY FIX
+All three flavours carry the same two dozen fixes to the 2004 libmad
+clone. The ones you were most likely to run into:
 
-The three editions differ *only* in decode policy; the fixes are in all of
-them. The ones you are most likely to have actually run into:
+- It crashed with players that give it little memory to work in.
+- Music from the network, a pipe, the serial port or a CD stopped after a
+  few seconds. It now plays to the end.
+- Every track lost its last fraction of a second, and the shown length was
+  a little short.
+- Mono dropped the right channel. Both channels are now mixed.
+- Jumping to a point under one second restarted the track, and jumping
+  into some files failed on perfectly good audio.
+- Files under 2 KB would not open, and some tags corrupted memory.
+- MP3s with a loudness (ReplayGain) tag froze the whole machine. The tag
+  now works.
+- A file ending in an old-style (ID3v1) tag reported an error instead of a
+  clean end.
+- Two players can play at the same time.
+- Damaged or hostile files fail cleanly instead of crashing (the 2017
+  libmad security fixes). Good files play exactly as before.
 
-- **It crashed with players that use a small stack.** Any caller with less
-  than ~8 KB free (and the AmigaDOS default is 4000 bytes) hit corrupted
-  registers and a garbage return address. A rebuild-induced fault: the 2004
-  binary was correct, and every modern rebuild since was not.
-- **Anything that was not a plain file stopped almost immediately.** Streams
-  fed through a hook that returns short reads (network, `PIPE:`, serial, CD)
-  decoded **9 frames out of 77** and stopped. They now decode identically to
-  a local file.
-- **Every track lost its last fraction of a second** (~26 ms), and the
-  reported duration was one frame short.
-- **Mono threw half the music away.** `force_mono` emitted the left channel
-  and discarded the right, so anything panned hard right (a guitar, a
-  backing vocal) simply vanished. Both channels are now mixed.
-- **Seeking under one second restarted the track**, because the position was
-  truncated to whole seconds. Sub-second scrubbing did nothing at all.
-- **Seeking into the middle of a file failed on some streams**, reporting an
-  error on perfectly intact audio.
-- **Files under 2 KB would not open**, and certain ID3v2 tag sizes corrupted
-  memory.
-- **A whole-machine freeze on MP3s carrying a LAME ReplayGain tag.** Every
-  68020 build ever made of this fork froze hard inside `MPEGA_open()`, before
-  a single frame decoded. ReplayGain is computed in fixed point now and
-  actually works on 68020 for the first time.
-- **A file ending in an ID3v1 tag** (nearly all of them) **reported an error
-  instead of a clean end of file.** The audio always decoded correctly; only
-  the final status was wrong.
-
-**Two players can decode at the same time.** Each open stream keeps entirely
-separate state, so a second player is unaffected by the first, and so is a
-single stream entered from two tasks.
-
-### HARDENED AGAINST DAMAGED AND MALICIOUS FILES
-
-Layer I, Layer II and Layer III now check that the bits they are about to
-read actually exist, which they largely did not before: a malformed or
-hostile `.mp1`, `.mp2` or `.mp3` could read past the end of a frame instead of
-failing cleanly. This is the fix for the 2017 libmad vulnerability family
-(CVE-2017-8372 / 8373 / 8374), taken from the Debian and Fedora patches that
-upstream libmad folded in at 0.16.0. Every valid stream still decodes
-bit-for-bit identically; the new checks are reached only by a broken file.
-
-See [`CHANGELOG.md`](CHANGELOG.md) for the full change list. Verified in AmiKit (AmigaAMP,
-AmPlifier, TKPlayer), including two players decoding concurrently.
-
-## Editions
-
-One source tree builds three flavours of the compiled library; check which
-one is installed with `version LIBS:mpega.library` (the edition is shown in
-brackets, e.g. `[020] [Hi-Fi forced]`):
-
-| Edition | Decoder | Player settings | Intended for |
-|---|---|---|---|
-| `mpega.library-bugfix` | original speed-optimized (`OPT_SPEED`/`OPT_SSO`) | honoured | real, low-power Amigas: original performance, just bugfixed |
-| `mpega.library-hifi` | full 64-bit precision (`FPM_64BIT` + `OPT_ACCURACY`) | honoured | machines with CPU headroom that still want player control |
-| `mpega.library-hifi-forced` | full 64-bit precision | **ignored: always maximum** | emulation / fast machines (e.g. AmiKit) |
-
-All three contain every bug fix, and future fixes flow into all editions
-automatically (the differences are two build-time switches).
-
-## Speed: measured, not estimated
-
-The obvious question before installing anything is *what does this cost me*.
-Here is the answer, measured on the real thing rather than reasoned about:
-AmiKit (68020), `tests/bench/mpegabench`, two different tracks in a single
-session, with a copied-binary null control bounding the noise at under 4 %:
-
-| Library | 3:17 VBR 48 kHz | 3:54 CBR 320 kb/s | vs the 2004 original |
-|---|---|---|---|
-| **2004 original** (2.4, gcc 2.95) | 100.8× | 80.2× | - |
-| **`-bugfix`** | **120.5×** | **89.3×** | **10-25 % faster** |
-| **`-hifi`**, **`-hifi-forced`** | 17.5× | 17.1× | **4.5-6× slower** |
-
-*Realtime factor: seconds of audio decoded per second of CPU; below 1.00× a
-machine cannot keep up. All rows come from one session so the ratios are
-comparable; the Hi-Fi row is the shipping `FPM_64BIT` configuration. The
-`-bugfix` gain over the original ranged from 10 to 25 % across sessions and
-tracks; the Hi-Fi cost likewise varies with the material, which is why both
-are ranges rather than one flattering number.*
-
-**What the extra CPU buys.** All three editions decode the same MP3
-correctly and contain the same fixes. `-hifi` spends that time on arithmetic
-precision: every multiply is carried at full 64-bit width and rounded once,
-rather than shifted and truncated 512 times per sample. Measured against a
-high-precision reference, that is an ~18 dB lower arithmetic noise floor. On
-a 16-bit output the audible difference is subtle: a quieter noise floor, not
-a different mix.
-
-**Which to pick.** On a real 68020, start with `-bugfix`: it is faster than
-what you have now and fixes everything. Try `-hifi` only if `mpegabench`
-shows you have the headroom to spare.
-
-## Hi-Fi behaviour (the `-hifi-forced` edition)
-
-Built for **AmigaOS 3 / 68020** with a modern `m68k-amigaos-gcc` (amiga-gcc,
-gcc 6.5). On top of the bug fixes it always decodes at maximum fidelity,
-ignoring player requests that would lower quality:
-
-- libmad built with `FPM_64BIT` + `OPT_ACCURACY`: full-precision 64-bit
-  fixed-point multiplies, and no `OPT_SSO` shortcut in the synthesis
-  filterbank (libmad silently forces `OPT_SSO` when `FPM_DEFAULT` is used, so
-  the Hi-Fi editions avoid it).
-- Always-on **dithered** (noise-shaped) 16-bit output.
-- **Full native bandwidth**: no `freq_div`/`freq_max` downsampling; the
-  library decodes at the source's native sample rate and reports it via
-  `dec_frequency`, so players/AHI play it at the correct rate and speed.
-- Broken CRCs are always tolerated, and recoverable Layer III frame errors
-  are played through (as the original did at LOW quality) instead of
-  returned as errors; robustness is decoupled from the forced HIGH fidelity,
-  so any file plays.
-- ReplayGain is not applied (unity gain) for a faithful, clip-free decode;
-  `MPEGA_scale` (player volume control) still works. `force_mono` is
-  honoured.
-
-## Requirements
-
-**AmigaOS 3** on a **68020** or better. No FPU is required; the library is
-entirely integer/fixed-point, including the ReplayGain gain calculation.
+The full list is in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Building
 
-One source tree serves all platforms via `#ifdef`. For **AmigaOS 3 / 68020**,
-build all three editions with:
-
 ```sh
-make                              # same as: make mpega.library_020_all
+make
 ```
 
-(or individually: `mpega.library_020_bugfix` / `_020_hifi` /
-`_020_hifi_forced`). This produces **`mpega.library-bugfix`**,
-**`mpega.library-hifi`** and **`mpega.library-hifi-forced`**; copy the chosen
-one to the Amiga as `LIBS:mpega.library`. The 68k cross toolchain (amiga-gcc,
-`m68k-amigaos-gcc`) must be in `PATH`. Use GNU make (`gmake`); the `Makefile`
-uses GNU pattern rules. The `-bugfix` edition builds with the original
-`FPM_DEFAULT`/`OPT_SPEED`/`OPT_SSO` flags; the Hi-Fi editions build with
-`FPM_64BIT` + `OPT_ACCURACY` (full-precision math, no SSO); `-hifi-forced`
-additionally defines `MPEGA_FORCE_HIFI` (the only code-level switch).
+builds `mpega.library-bugfix`, `mpega.library-hifi` and
+`mpega.library-hifi-forced` (individually: `make mpega.library_020_bugfix`,
+`_020_hifi`, `_020_hifi_forced`). Needs the amiga-gcc cross toolchain
+(`m68k-amigaos-gcc`) in `PATH`, GNU make and `python3` (every build checks
+the linked library for the stack-swap defect). The flavours differ in build
+flags only: `-bugfix` uses `FPM_DEFAULT` / `OPT_SPEED` / `OPT_SSO`, the Hi-Fi
+flavours `FPM_64BIT` + `OPT_ACCURACY`, and `-hifi-forced` adds
+`MPEGA_FORCE_HIFI`. Only AmigaOS 3 / 68020 is built; the 2004 PPC, OS4, AROS
+and 040 targets were removed, and their sources and binaries live on in
+`original-archives/`.
 
-The original `_040` / `_PPC` / `_OS4` / AROS targets are kept in the
-`Makefile` for reference only. The PPC ones have **never been built in this
-fork and cannot be built here**: `_PPC` (MorphOS + PowerUP) and `_OS4` need
-`ppc-morphos-gcc` / `ppc-amigaos-gcc`, the phase5 PowerUP and AmigaOS 4 SDKs,
-the `Data2Object` utility, and the 2004 Amiga include paths their recipes
-hardcode (`/GCCInclude`, `/PPCInclude`, `/V/include`). The `.pup` / `.os4` /
-`.elf` binaries in this repo are the untouched 2004 originals (v2.4,
-17.03.04) and carry none of this fork's fixes. `make clean` removes object
-files.
+Tests: `make check` runs the host regression harness, `make check-m68k`
+runs the built libraries under vamos. See [`tests/README.md`](tests/README.md).
 
 ## Repository layout
 
@@ -213,53 +141,39 @@ files.
 |------|------|
 | `library_init.c/.h`, `library_base.h` | Library boilerplate / init |
 | `wrap_mpega.c/.h` | The mpega API wrapper over libmad |
-| `support.c/.h`, `support_pup.c/.h`, `startup_pup.c` | Platform support / PowerUP glue |
-| `mad/` | Robert Leslie's libmad 0.15.1b **plus the hardening upstream folded in at 0.16.0**, heavily modified for 68k (decoder + `*.dat` tables). **This is the libmad that gets built.** |
-| `mpega_68k_os4.S` | 68k assembler glue for the OS4 build |
-| `mpega.fd`, `mpega.i` | Library FD + assembler inline interface |
-| `compiler.h` | Cross-platform compiler/ABI shims |
-| `Makefile` | 68020 build (the supported one); 2004 PPC / PowerUP / OS4 / MorphOS recipes kept for reference |
-| `Makefile.aros`, `library_init_aros.c`, `include_aros/`, `README.AROS` | AROS i386 port |
-| `mpega.library.040/.pup/.os4/.elf/.aros_x86` | **Original** prebuilt release binaries (baselines) |
-| `mpega.storm`, `mpega_PPC.storm` (+ `.info`) | StormC IDE project files (see note) |
-| `original-archives/` | Pristine upstream archives, byte-for-byte |
+| `support.c/.h` | Memory pool and string helpers |
+| `mad/` | Robert Leslie's libmad 0.15.1b plus the hardening upstream folded in at 0.16.0, modified for 68k |
+| `mpega.fd` | Library FD (function table, register arguments) |
+| `Makefile` | 68020 build of the three flavours |
+| `include_aros/libraries/mpega.h` | The public API header |
+| `original-archives/` | Pristine upstream archives, byte for byte |
+| `tests/` | Regression harness, fixtures and the on-Amiga benchmark |
 
-## Provenance / import history
+## Credits
 
-This repo was assembled from two upstream archives, each committed pristine
-under `original-archives/` and extracted into its own commit:
+These authors had no part in this version:
 
-1. **`mpega_libmad.lha`**: the 7th release (code 3 Mar 2004; the .lha
-   snapshot itself dates to 15 Jun 2004, when the OS4 binary was added). The
-   canonical multi-platform Amiga distribution (68k/PPC/OS4/MorphOS).
-2. **`mpega_libmad.i386.tar.bz2`**: Georg Steger's AROS i386 port. Its only
-   changes to the shared sources are additive `__AROS__` / `BUILD_AROS`
-   branches; the 68k path is identical to the .lha.
+- **Stephane Tavenard**: the original mpega.library (1999)
+- **Sigbjørn Skjæret (CISC)**: the libmad-based clone (2004)
+- **Robert Leslie**: libmad (in [`mad/`](mad/))
+- **Jarmo Laakkonen**: WarpOS version (2004)
+- **Stephan Rupprecht**: OS4 version (2004)
+- **Georg Steger**: AROS i386 port (2006)
 
-**Note on the StormC project files:** the original `mpega.<0xB6>` /
-`mpega_PPC.<0xB6>` StormC IDE project files (and their `.info` icons) used a
-non-ASCII `0xB6` byte in their names. They are renamed here to `mpega.storm` /
-`mpega_PPC.storm` (+ `.info`) for filesystem and cross-platform portability.
-The byte-exact originals (with the original names) live inside
-`original-archives/mpega_libmad.lha`.
+Their sources are kept byte for byte under `original-archives/`:
+`mpega_libmad.lha` (the 7th release, 68k/PPC/OS4/MorphOS) and
+`mpega_libmad.i386.tar.bz2` (the AROS port, whose 68k path is identical).
 
 ## Thanks
 
-`mpega.library` is Stephane Tavenard's program; this is Sigbjørn Skjæret's
-libmad-based clone of it, carried forward here. Thanks to **Midwan**, for the
-initial analysis of the source and his suggestions, which set the direction
-of the whole effort, and to **Philipp Lonke**, for beta testing.
+To **Midwan**, for the initial analysis of the first builds and his
+suggestions, which set the direction of the whole effort, to **Philipp
+Lonke** and **Falcon_11**, for beta testing, and others who helped make this
+happen.
 
-- **Sigbjørn Skjæret (CISC)**: the original libmad-based mpega.library clone
-- **Robert Leslie**: libmad (in [`mad/`](mad/))
-- **Jarmo Laakkonen**: WarpOS version
-- **Stephan Rupprecht**: OS4 version
-- **Georg Steger**: AROS i386 port
-- **Jan Zahurancik / AmiKit**: the bugfixed, Hi-Fi 68020 fork (2026)
+## License
 
 Licensed under the **GNU GPL v2** (because libmad is GPL). See
 [`mad/COPYING`](mad/COPYING), [`mad/COPYRIGHT`](mad/COPYRIGHT) and
 [`mad/CREDITS`](mad/CREDITS). Applications using this library must be GPL too.
-The complete source for this release is at
-https://github.com/AmiKit/mpega_library_3 - you are entitled to the source
-of any binary you receive.
+The complete source is on GitHub: https://github.com/AmiKit/mpega_library_3.

@@ -2,10 +2,9 @@
 """
 Stack-swap argument cleanup -- verify a LINKED mpega.library binary.
 
-tests/check_stackswap.sh guards the compiler output (library_init.o) at build
-time. This script checks the finished artifact instead, so a library taken out
-of a release archive -- or one someone else built -- can be checked without the
-sources.
+Every make variant recipe runs this on the library it just linked, and a
+library taken out of a release archive -- or one someone else built -- can be
+checked the same way, without the sources.
 
 Background
 ----------
@@ -21,8 +20,8 @@ and StackSwap() back to the caller's stack:
 If the 12-byte cleanup is missing from that window, gcc deferred it into the
 epilogue, where it runs after the swap and moves the CALLER's stack pointer.
 The register restore then reads the wrong slots and rts returns to garbage --
-a crash for any caller with less than 8 KB of stack left (AmigaDOS defaults to
-4000 bytes).
+a crash for any caller below the library's stack threshold (12 KB;
+AmigaDOS defaults to 4000 bytes).
 
 Usage
 -----

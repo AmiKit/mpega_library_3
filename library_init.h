@@ -1,5 +1,5 @@
 #include "library_base.h"
-#include "compiler.h"
+#define REG(reg,arg) arg __asm(#reg)
 
 #define AQuote(string) #string								/* Put quotes around the whole thing */
 #define AVersion(major,minor) AQuote(major ## . ## minor)	/* Concatenate the two version-numbers */
@@ -7,8 +7,8 @@
 
 #define LIB_NAME	"mpega.library"
 #define LIB_VERSION	3
-#define LIB_REVISION	0
-#define LIB_DATE	"(25.07.26)"
+#define LIB_REVISION	1
+#define LIB_DATE	"(29.10.26)"
 
 #define CLONE_VERSION	1
 #define CLONE_REVISION	7
@@ -108,44 +108,16 @@
 
 #include <libraries/mpega.h>
 
-#ifdef __MORPHOS__
+struct Library * LibInit(REG(d0, struct PrivateBase *PrivateBase), REG(a0, BPTR SegList), REG(a6, struct ExecBase *sysbase));
 
-struct Library *LibInit(struct PrivateBase *PrivateBase, BPTR SegList, struct ExecBase *sysbase);
-struct Library *LIB_Open(void);
-BPTR LIB_Close(void);
-BPTR LIB_Expunge(void);
+struct Library * LIB_Open(REG(a6, struct PrivateBase *PrivateBase));
+BPTR LIB_Close(REG(a6, struct PrivateBase *PrivateBase));
+BPTR LIB_Expunge(REG(a6, struct PrivateBase *PrivateBase));
 
-MPEGA_STREAM *LIB_MPEGA_open(void);
-void LIB_MPEGA_close(void);
-LONG LIB_MPEGA_decode_frame(void);
-LONG LIB_MPEGA_seek(void);
-LONG LIB_MPEGA_time(void);
-LONG LIB_MPEGA_find_sync(void);
-LONG LIB_MPEGA_scale(void);
-
-#else
-
-#ifdef BUILD_OS4
-#define __IFACE_OR_BASE		struct Interface *Self
-#else
-#define __IFACE_OR_BASE		struct PrivateBase *PrivateBase
-#endif
-
-#ifdef BUILD_OS4
-struct Library * ASM LibInit(REG(d0, struct PrivateBase *PrivateBase), REG(a0, BPTR SegList), REG(a6, struct ExecIFace *pIExec));
-#else
-struct Library * ASM LibInit(REG(d0, struct PrivateBase *PrivateBase), REG(a0, BPTR SegList), REG(a6, struct ExecBase *sysbase));
-#endif
-
-struct Library * ASM LIB_Open(REG(a6, __IFACE_OR_BASE));
-BPTR ASM LIB_Close(REG(a6, __IFACE_OR_BASE));
-BPTR ASM LIB_Expunge(REG(a6, __IFACE_OR_BASE));
-
-MPEGA_STREAM * LIB LIB_MPEGA_open(REG(a6, __IFACE_OR_BASE), REG(a0, char *stream_name), REG(a1, MPEGA_CTRL *ctrl), REG(a4, APTR a4base));
-void LIB LIB_MPEGA_close(REG(a6, __IFACE_OR_BASE), REG(a0, MPEGA_STREAM *mpega_stream), REG(a4, APTR a4base));
-LONG LIB LIB_MPEGA_decode_frame(REG(a6, __IFACE_OR_BASE), REG(a0, MPEGA_STREAM *mpega_stream), REG(a1, WORD **pcm), REG(a4, APTR a4base));
-LONG LIB LIB_MPEGA_seek(REG(a6, __IFACE_OR_BASE), REG(a0, MPEGA_STREAM *mpega_stream), REG(d0, ULONG ms_time_position), REG(a4, APTR a4base));
-LONG LIB LIB_MPEGA_time(REG(a6, __IFACE_OR_BASE), REG(a0, MPEGA_STREAM *mpega_stream), REG(a1, ULONG *ms_time_position));
-LONG LIB LIB_MPEGA_find_sync(REG(a6, __IFACE_OR_BASE), REG(a0, UBYTE *buffer), REG(d0, LONG buffer_size));
-LONG LIB LIB_MPEGA_scale(REG(a6, __IFACE_OR_BASE), REG(a0, MPEGA_STREAM *mpega_stream), REG(d0, LONG scale_percent));
-#endif
+MPEGA_STREAM * LIB_MPEGA_open(REG(a6, struct PrivateBase *PrivateBase), REG(a0, char *stream_name), REG(a1, MPEGA_CTRL *ctrl), REG(a4, APTR a4base));
+void LIB_MPEGA_close(REG(a6, struct PrivateBase *PrivateBase), REG(a0, MPEGA_STREAM *mpega_stream), REG(a4, APTR a4base));
+LONG LIB_MPEGA_decode_frame(REG(a6, struct PrivateBase *PrivateBase), REG(a0, MPEGA_STREAM *mpega_stream), REG(a1, WORD **pcm), REG(a4, APTR a4base));
+LONG LIB_MPEGA_seek(REG(a6, struct PrivateBase *PrivateBase), REG(a0, MPEGA_STREAM *mpega_stream), REG(d0, ULONG ms_time_position), REG(a4, APTR a4base));
+LONG LIB_MPEGA_time(REG(a6, struct PrivateBase *PrivateBase), REG(a0, MPEGA_STREAM *mpega_stream), REG(a1, ULONG *ms_time_position));
+LONG LIB_MPEGA_find_sync(REG(a6, struct PrivateBase *PrivateBase), REG(a0, UBYTE *buffer), REG(d0, LONG buffer_size));
+LONG LIB_MPEGA_scale(REG(a6, struct PrivateBase *PrivateBase), REG(a0, MPEGA_STREAM *mpega_stream), REG(d0, LONG scale_percent));

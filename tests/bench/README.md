@@ -35,7 +35,7 @@ which matters when three flavours and several test builds are in play.
 ## Reading the result
 
 ```
-library : $VER: mpega.library 3.0 (10.07.26) [020] [Hi-Fi] [P4] ...
+library : mpega.library 3.1 (29.10.26) [020] [Hi-Fi] [64bit] ...
 file    : Music.mp3
 mode    : stereo, 3 passes
   pass 1: 214 ticks (4.28 s)

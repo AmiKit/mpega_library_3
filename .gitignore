@@ -1,11 +1,7 @@
-# Build intermediates (see Makefile / Makefile.aros)
+# Build intermediates (see Makefile)
 *.o
-mad.stmp
-elfobject.elf
-elfobject.o
-mpega_68k_os4.o
 
-# Transient library output before the Makefile renames it to .040/.elf/.pup/.os4/.aros_x86
+# Transient library output before the Makefile renames it to -bugfix/-hifi/-hifi-forced
 /mpega.library
 
 # Regression harness: fixtures and expected/ ARE tracked; only local scratch is not.
@@ -26,8 +22,7 @@ tests/decode_ref
 *.bak
 
 # Build products stay out of git: variants are rebuilt from source, release
-# archives are published as GitHub release assets. The upstream-imported 2004
-# binaries (mpega.library.040 etc.) remain tracked as provenance.
+# archives are published as GitHub release assets.
 /mpega.library-bugfix
 /mpega.library-hifi
 /mpega.library-hifi-forced

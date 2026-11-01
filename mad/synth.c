@@ -110,6 +110,12 @@ void mad_synth_mute(struct mad_synth *synth)
        MAD_F_MLX(hi, lo, (x), (y));  \
        hi << (32 - MAD_F_SCALEBITS - 3);  \
     })
+# elif defined(FPM_64BIT)
+/* mpega Hi-Fi fork: the Q31 cosines of OPT_DCTO, rounded; the 64-bit shift
+   by 31 costs the 68020 less than mad_f_mul()'s shift by 28 */
+#  define OPT_DCTO
+#  define MUL(x, y)  \
+    ((mad_fixed_t) ((((mad_fixed64_t) (x) * (y)) + (1L << 30)) >> 31))
 # else
 #  undef OPT_DCTO
 #  define MUL(x, y)  mad_f_mul((x), (y))
@@ -146,6 +152,16 @@ void dct32(mad_fixed_t const in[32], unsigned int slot,
   mad_fixed_t t160, t161, t162, t163, t164, t165, t166, t167;
   mad_fixed_t t168, t169, t170, t171, t172, t173, t174, t175;
   mad_fixed_t t176;
+# if MAD_F_HEADROOM
+  mad_fixed_t scaled[32];
+  unsigned int i;
+
+  /* the window in synth_full() & co. gives the headroom back in MLZ, see
+     fixed.h */
+  for (i = 0; i < 32; ++i)
+    scaled[i] = in[i] >> MAD_F_HEADROOM;
+  in = scaled;
+# endif
 
   /* costab[i] = cos(PI / (2 * 32) * i) */
 
@@ -526,6 +542,21 @@ void dct32(mad_fixed_t const in[32], unsigned int slot,
 #  define MLZ(hi, lo)		((void) (hi), (mad_fixed_t) (lo))
 #  define SHIFT(x)		((x) >> 2)
 #  define PRESHIFT(x)		((MAD_F(x) + (1L << 13)) >> 14)
+#  if MAD_F_HEADROOM
+#   error "MAD_F_HEADROOM is not given back in the SSO window (FPM_64BIT with OPT_SPEED)"
+#  endif
+# elif defined(FPM_64BIT)
+/* mpega Hi-Fi fork: D[] in Q30 and only the high word of each product,
+   summed in Q24 and scaled once, which also gives back dct32's headroom.
+   gcc spilled every 64-bit product of mad_f_mul() to the stack, the
+   window's main cost on the 68020; the dropped low words lie 9 bits below
+   the 16-bit output. */
+#  define ML0(hi, lo, x, y)	((lo)  = (mad_fixed_t) (((mad_fixed64_t) (x) * (y)) >> 32))
+#  define MLA(hi, lo, x, y)	((lo) += (mad_fixed_t) (((mad_fixed64_t) (x) * (y)) >> 32))
+#  define MLN(hi, lo)		((lo)  = -(lo))
+#  define MLZ(hi, lo)		((void) (hi), (mad_fixed_t) ((lo) * (1 << (2 + MAD_F_HEADROOM))))
+#  define SHIFT(x)		(x)
+#  define PRESHIFT(x)		(MAD_F(x) << 2)
 # else
 #  define ML0(hi, lo, x, y)	MAD_F_ML0((hi), (lo), (x), (y))
 #  define MLA(hi, lo, x, y)	MAD_F_MLA((hi), (lo), (x), (y))

@@ -355,6 +355,21 @@ mad_fixed_t const root_table[7] = {
 };
 
 /*
+ * mpega Hi-Fi fork: with FPM_64BIT the alias reduction and the long-block
+ * window take their constants in Q31 and keep only the high word of each
+ * product, which the 68020 gets from one MULS.L, instead of mad_f_mul()'s
+ * 64-bit rounding and shift. -bugfix keeps Q28 and mad_f_mul().
+ */
+# if defined(FPM_64BIT)
+#  define MAD_F31(x)		(MAD_F(x) << 3)
+#  define mad_f_hi(x, y)	((mad_fixed_t) (((mad_fixed64_t) (x) * (y)) >> 32))
+#  define mad_f_mul31(x, y)	(mad_f_hi((x), (y)) * 2)
+# else
+#  define MAD_F31(x)		MAD_F(x)
+#  define mad_f_mul31(x, y)	mad_f_mul((x), (y))
+# endif
+
+/*
  * coefficients for aliasing reduction
  * derived from Table B.9 of ISO/IEC 11172-3
  *
@@ -364,18 +379,18 @@ mad_fixed_t const root_table[7] = {
  */
 static
 mad_fixed_t const cs[8] = {
-  +MAD_F(0x0db84a81) /* +0.857492926 */, +MAD_F(0x0e1b9d7f) /* +0.881741997 */,
-  +MAD_F(0x0f31adcf) /* +0.949628649 */, +MAD_F(0x0fbba815) /* +0.983314592 */,
-  +MAD_F(0x0feda417) /* +0.995517816 */, +MAD_F(0x0ffc8fc8) /* +0.999160558 */,
-  +MAD_F(0x0fff964c) /* +0.999899195 */, +MAD_F(0x0ffff8d3) /* +0.999993155 */
+  +MAD_F31(0x0db84a81) /* +0.857492926 */, +MAD_F31(0x0e1b9d7f) /* +0.881741997 */,
+  +MAD_F31(0x0f31adcf) /* +0.949628649 */, +MAD_F31(0x0fbba815) /* +0.983314592 */,
+  +MAD_F31(0x0feda417) /* +0.995517816 */, +MAD_F31(0x0ffc8fc8) /* +0.999160558 */,
+  +MAD_F31(0x0fff964c) /* +0.999899195 */, +MAD_F31(0x0ffff8d3) /* +0.999993155 */
 };
 
 static
 mad_fixed_t const ca[8] = {
-  -MAD_F(0x083b5fe7) /* -0.514495755 */, -MAD_F(0x078c36d2) /* -0.471731969 */,
-  -MAD_F(0x05039814) /* -0.313377454 */, -MAD_F(0x02e91dd1) /* -0.181913200 */,
-  -MAD_F(0x0183603a) /* -0.094574193 */, -MAD_F(0x00a7cb87) /* -0.040965583 */,
-  -MAD_F(0x003a2847) /* -0.014198569 */, -MAD_F(0x000f27b4) /* -0.003699975 */
+  -MAD_F31(0x083b5fe7) /* -0.514495755 */, -MAD_F31(0x078c36d2) /* -0.471731969 */,
+  -MAD_F31(0x05039814) /* -0.313377454 */, -MAD_F31(0x02e91dd1) /* -0.181913200 */,
+  -MAD_F31(0x0183603a) /* -0.094574193 */, -MAD_F31(0x00a7cb87) /* -0.040965583 */,
+  -MAD_F31(0x003a2847) /* -0.014198569 */, -MAD_F31(0x000f27b4) /* -0.003699975 */
 };
 
 /*
@@ -399,26 +414,26 @@ mad_fixed_t const imdct_s[6][6] = {
  */
 static
 mad_fixed_t const window_l[36] = {
-  MAD_F(0x00b2aa3e) /* 0.043619387 */, MAD_F(0x0216a2a2) /* 0.130526192 */,
-  MAD_F(0x03768962) /* 0.216439614 */, MAD_F(0x04cfb0e2) /* 0.300705800 */,
-  MAD_F(0x061f78aa) /* 0.382683432 */, MAD_F(0x07635284) /* 0.461748613 */,
-  MAD_F(0x0898c779) /* 0.537299608 */, MAD_F(0x09bd7ca0) /* 0.608761429 */,
-  MAD_F(0x0acf37ad) /* 0.675590208 */, MAD_F(0x0bcbe352) /* 0.737277337 */,
-  MAD_F(0x0cb19346) /* 0.793353340 */, MAD_F(0x0d7e8807) /* 0.843391446 */,
+  MAD_F31(0x00b2aa3e) /* 0.043619387 */, MAD_F31(0x0216a2a2) /* 0.130526192 */,
+  MAD_F31(0x03768962) /* 0.216439614 */, MAD_F31(0x04cfb0e2) /* 0.300705800 */,
+  MAD_F31(0x061f78aa) /* 0.382683432 */, MAD_F31(0x07635284) /* 0.461748613 */,
+  MAD_F31(0x0898c779) /* 0.537299608 */, MAD_F31(0x09bd7ca0) /* 0.608761429 */,
+  MAD_F31(0x0acf37ad) /* 0.675590208 */, MAD_F31(0x0bcbe352) /* 0.737277337 */,
+  MAD_F31(0x0cb19346) /* 0.793353340 */, MAD_F31(0x0d7e8807) /* 0.843391446 */,
 
-  MAD_F(0x0e313245) /* 0.887010833 */, MAD_F(0x0ec835e8) /* 0.923879533 */,
-  MAD_F(0x0f426cb5) /* 0.953716951 */, MAD_F(0x0f9ee890) /* 0.976296007 */,
-  MAD_F(0x0fdcf549) /* 0.991444861 */, MAD_F(0x0ffc19fd) /* 0.999048222 */,
-  MAD_F(0x0ffc19fd) /* 0.999048222 */, MAD_F(0x0fdcf549) /* 0.991444861 */,
-  MAD_F(0x0f9ee890) /* 0.976296007 */, MAD_F(0x0f426cb5) /* 0.953716951 */,
-  MAD_F(0x0ec835e8) /* 0.923879533 */, MAD_F(0x0e313245) /* 0.887010833 */,
+  MAD_F31(0x0e313245) /* 0.887010833 */, MAD_F31(0x0ec835e8) /* 0.923879533 */,
+  MAD_F31(0x0f426cb5) /* 0.953716951 */, MAD_F31(0x0f9ee890) /* 0.976296007 */,
+  MAD_F31(0x0fdcf549) /* 0.991444861 */, MAD_F31(0x0ffc19fd) /* 0.999048222 */,
+  MAD_F31(0x0ffc19fd) /* 0.999048222 */, MAD_F31(0x0fdcf549) /* 0.991444861 */,
+  MAD_F31(0x0f9ee890) /* 0.976296007 */, MAD_F31(0x0f426cb5) /* 0.953716951 */,
+  MAD_F31(0x0ec835e8) /* 0.923879533 */, MAD_F31(0x0e313245) /* 0.887010833 */,
 
-  MAD_F(0x0d7e8807) /* 0.843391446 */, MAD_F(0x0cb19346) /* 0.793353340 */,
-  MAD_F(0x0bcbe352) /* 0.737277337 */, MAD_F(0x0acf37ad) /* 0.675590208 */,
-  MAD_F(0x09bd7ca0) /* 0.608761429 */, MAD_F(0x0898c779) /* 0.537299608 */,
-  MAD_F(0x07635284) /* 0.461748613 */, MAD_F(0x061f78aa) /* 0.382683432 */,
-  MAD_F(0x04cfb0e2) /* 0.300705800 */, MAD_F(0x03768962) /* 0.216439614 */,
-  MAD_F(0x0216a2a2) /* 0.130526192 */, MAD_F(0x00b2aa3e) /* 0.043619387 */,
+  MAD_F31(0x0d7e8807) /* 0.843391446 */, MAD_F31(0x0cb19346) /* 0.793353340 */,
+  MAD_F31(0x0bcbe352) /* 0.737277337 */, MAD_F31(0x0acf37ad) /* 0.675590208 */,
+  MAD_F31(0x09bd7ca0) /* 0.608761429 */, MAD_F31(0x0898c779) /* 0.537299608 */,
+  MAD_F31(0x07635284) /* 0.461748613 */, MAD_F31(0x061f78aa) /* 0.382683432 */,
+  MAD_F31(0x04cfb0e2) /* 0.300705800 */, MAD_F31(0x03768962) /* 0.216439614 */,
+  MAD_F31(0x0216a2a2) /* 0.130526192 */, MAD_F31(0x00b2aa3e) /* 0.043619387 */,
 };
 # endif  /* ASO_IMDCT */
 
@@ -1610,8 +1625,10 @@ void III_aliasreduce(mad_fixed_t xr[576], int lines)
   for (xr += 18; xr < bound; xr += 18) {
     for (i = 0; i < 8; ++i) {
       register mad_fixed_t a, b;
+# if !defined(FPM_64BIT)
       register mad_fixed64hi_t hi;
       register mad_fixed64lo_t lo;
+# endif
 
       a = xr[-1 - i];
       b = xr[     i];
@@ -1619,6 +1636,10 @@ void III_aliasreduce(mad_fixed_t xr[576], int lines)
 # if defined(ASO_ZEROCHECK)
       if (a | b) {
 # endif
+# if defined(FPM_64BIT)
+	xr[-1 - i] = (mad_f_hi(a, cs[i]) - mad_f_hi(b, ca[i])) * 2;
+	xr[     i] = (mad_f_hi(b, cs[i]) + mad_f_hi(a, ca[i])) * 2;
+# else
 	MAD_F_ML0(hi, lo,  a, cs[i]);
 	MAD_F_MLA(hi, lo, -b, ca[i]);
 
@@ -1628,6 +1649,7 @@ void III_aliasreduce(mad_fixed_t xr[576], int lines)
 	MAD_F_MLA(hi, lo,  a, ca[i]);
 
 	xr[     i] = MAD_F_MLZ(hi, lo);
+# endif
 # if defined(ASO_ZEROCHECK)
       }
 # endif
@@ -1758,15 +1780,24 @@ void dctIV(mad_fixed_t const y[18], mad_fixed_t X[18])
   mad_fixed_t tmp[18];
   int i;
 
-  /* scale[i] = 2 * cos(PI * (2 * i + 1) / (4 * 18)) */
+  /* scale[i] = 2 * cos(PI * (2 * i + 1) / (4 * 18)), less MAD_F_HEADROOM
+     bits: the SDCT-II below then works at a quarter of the level, and the
+     scale reduction at the end gives it back (HALF) */
+# define HR(x)  ((MAD_F(x) + ((1L << MAD_F_HEADROOM) >> 1)) >> MAD_F_HEADROOM)
   static mad_fixed_t const scale[18] = {
-    MAD_F(0x1ff833fa), MAD_F(0x1fb9ea93), MAD_F(0x1f3dd120),
-    MAD_F(0x1e84d969), MAD_F(0x1d906bcf), MAD_F(0x1c62648b),
-    MAD_F(0x1afd100f), MAD_F(0x1963268b), MAD_F(0x1797c6a4),
-    MAD_F(0x159e6f5b), MAD_F(0x137af940), MAD_F(0x11318ef3),
-    MAD_F(0x0ec6a507), MAD_F(0x0c3ef153), MAD_F(0x099f61c5),
-    MAD_F(0x06ed12c5), MAD_F(0x042d4544), MAD_F(0x0165547c)
+    HR(0x1ff833fa), HR(0x1fb9ea93), HR(0x1f3dd120),
+    HR(0x1e84d969), HR(0x1d906bcf), HR(0x1c62648b),
+    HR(0x1afd100f), HR(0x1963268b), HR(0x1797c6a4),
+    HR(0x159e6f5b), HR(0x137af940), HR(0x11318ef3),
+    HR(0x0ec6a507), HR(0x0c3ef153), HR(0x099f61c5),
+    HR(0x06ed12c5), HR(0x042d4544), HR(0x0165547c)
   };
+# undef HR
+# if MAD_F_HEADROOM
+#  define HALF(x)  ((x) * (1 << (MAD_F_HEADROOM - 1)))
+# else
+#  define HALF(x)  ((x) / 2)
+# endif
 
   /* scaling */
 
@@ -1782,15 +1813,16 @@ void dctIV(mad_fixed_t const y[18], mad_fixed_t X[18])
 
   /* scale reduction and output accumulation */
 
-  X[0] /= 2;
+  X[0] = HALF(X[0]);
   for (i = 1; i < 17; i += 4) {
-    X[i + 0] = X[i + 0] / 2 - X[(i + 0) - 1];
-    X[i + 1] = X[i + 1] / 2 - X[(i + 1) - 1];
-    X[i + 2] = X[i + 2] / 2 - X[(i + 2) - 1];
-    X[i + 3] = X[i + 3] / 2 - X[(i + 3) - 1];
+    X[i + 0] = HALF(X[i + 0]) - X[(i + 0) - 1];
+    X[i + 1] = HALF(X[i + 1]) - X[(i + 1) - 1];
+    X[i + 2] = HALF(X[i + 2]) - X[(i + 2) - 1];
+    X[i + 3] = HALF(X[i + 3]) - X[(i + 3) - 1];
   }
-  X[17] = X[17] / 2 - X[16];
+  X[17] = HALF(X[17]) - X[16];
 }
+# undef HALF
 
 /*
  * NAME:	imdct36
@@ -2143,14 +2175,14 @@ void III_imdct_l(mad_fixed_t const X[18], mad_fixed_t z[36],
       tmp2 = window_l[1];
 
       for (i = 0; i < 34; i += 2) {
-	z[i + 0] = mad_f_mul(z[i + 0], tmp1);
+	z[i + 0] = mad_f_mul31(z[i + 0], tmp1);
 	tmp1 = window_l[i + 2];
-	z[i + 1] = mad_f_mul(z[i + 1], tmp2);
+	z[i + 1] = mad_f_mul31(z[i + 1], tmp2);
 	tmp2 = window_l[i + 3];
       }
 
-      z[34] = mad_f_mul(z[34], tmp1);
-      z[35] = mad_f_mul(z[35], tmp2);
+      z[34] = mad_f_mul31(z[34], tmp1);
+      z[35] = mad_f_mul31(z[35], tmp2);
     }
 # elif defined(ASO_INTERLEAVE2)
     {
@@ -2160,30 +2192,30 @@ void III_imdct_l(mad_fixed_t const X[18], mad_fixed_t z[36],
       tmp2 = window_l[0];
 
       for (i = 0; i < 35; ++i) {
-	z[i] = mad_f_mul(tmp1, tmp2);
+	z[i] = mad_f_mul31(tmp1, tmp2);
 	tmp1 = z[i + 1];
 	tmp2 = window_l[i + 1];
       }
 
-      z[35] = mad_f_mul(tmp1, tmp2);
+      z[35] = mad_f_mul31(tmp1, tmp2);
     }
 # elif 1
     for (i = 0; i < 36; i += 4) {
-      z[i + 0] = mad_f_mul(z[i + 0], window_l[i + 0]);
-      z[i + 1] = mad_f_mul(z[i + 1], window_l[i + 1]);
-      z[i + 2] = mad_f_mul(z[i + 2], window_l[i + 2]);
-      z[i + 3] = mad_f_mul(z[i + 3], window_l[i + 3]);
+      z[i + 0] = mad_f_mul31(z[i + 0], window_l[i + 0]);
+      z[i + 1] = mad_f_mul31(z[i + 1], window_l[i + 1]);
+      z[i + 2] = mad_f_mul31(z[i + 2], window_l[i + 2]);
+      z[i + 3] = mad_f_mul31(z[i + 3], window_l[i + 3]);
     }
 # else
-    for (i =  0; i < 36; ++i) z[i] = mad_f_mul(z[i], window_l[i]);
+    for (i =  0; i < 36; ++i) z[i] = mad_f_mul31(z[i], window_l[i]);
 # endif
     break;
 
   case 1:  /* start block */
     for (i =  0; i < 18; i += 3) {
-      z[i + 0] = mad_f_mul(z[i + 0], window_l[i + 0]);
-      z[i + 1] = mad_f_mul(z[i + 1], window_l[i + 1]);
-      z[i + 2] = mad_f_mul(z[i + 2], window_l[i + 2]);
+      z[i + 0] = mad_f_mul31(z[i + 0], window_l[i + 0]);
+      z[i + 1] = mad_f_mul31(z[i + 1], window_l[i + 1]);
+      z[i + 2] = mad_f_mul31(z[i + 2], window_l[i + 2]);
     }
     /*  (i = 18; i < 24; ++i) z[i] unchanged */
     for (i = 24; i < 30; ++i) z[i] = mad_f_mul(z[i], window_s[i - 18]);
@@ -2195,9 +2227,9 @@ void III_imdct_l(mad_fixed_t const X[18], mad_fixed_t z[36],
     for (i =  6; i < 12; ++i) z[i] = mad_f_mul(z[i], window_s[i - 6]);
     /*  (i = 12; i < 18; ++i) z[i] unchanged */
     for (i = 18; i < 36; i += 3) {
-      z[i + 0] = mad_f_mul(z[i + 0], window_l[i + 0]);
-      z[i + 1] = mad_f_mul(z[i + 1], window_l[i + 1]);
-      z[i + 2] = mad_f_mul(z[i + 2], window_l[i + 2]);
+      z[i + 0] = mad_f_mul31(z[i + 0], window_l[i + 0]);
+      z[i + 1] = mad_f_mul31(z[i + 1], window_l[i + 1]);
+      z[i + 2] = mad_f_mul31(z[i + 2], window_l[i + 2]);
     }
     break;
   }

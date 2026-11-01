@@ -1,5 +1,4 @@
 #include "wrap_mpega.h"
-#include "compiler.h"
 
 #include <proto/dos.h>
 #include <stdlib.h>
@@ -22,25 +21,8 @@
 #include "frame.h"
 #include "synth.h"
 #include "resample.h"
-#include "filter.h"
 #include "timer.h"
 #include "tag.h"
-
-#ifdef BUILD_WARPUP
-#include <powerpc/powerpc.h>
-#include <proto/powerpc.h>
-#elif defined(BUILD_POWERUP)
-#include <powerup/gcclib/powerup_protos.h>
-
-#undef Open
-#define Open PPCOpen
-#undef Close
-#define Close PPCClose
-#undef Read
-#define Read PPCRead
-#undef Seek
-#define Seek PPCSeek
-#endif
 
 #define DEFAULT_BUFFER_SIZE 8192
 
@@ -50,7 +32,6 @@ typedef struct
 	UBYTE *buffer;
 	ULONG streamsize;
 	ULONG streamskip;
-	ULONG sampleskip;
 
 	MPEGA_CTRL *ctrl;
 	MPEGA_ACCESS *access;
@@ -83,6 +64,17 @@ typedef struct
 	   a false header and the bit reservoir it needs is still behind us. */
 	WORD post_seek;
 
+	/* streamsize came from ExamineFH or the hook, not from the size-of-the-
+	   first-read guess in InitDecoder (nor from the LAME music length, which
+	   leaves out the ID3v2 tag in front). Only a real size may limit a seek. */
+	WORD size_known;
+
+	/* The bitrate known when the open finished (the Xing average for VBR).
+	   A seek without a TOC needs it: SetStreamValues overwrites
+	   mpega_stream->bitrate with every frame's own. 0 when the open decoded
+	   no frame. */
+	WORD open_kbps;
+
 	struct mad_stream stream;
 	struct mad_frame frame;
 	struct mad_synth synth;
@@ -107,83 +99,24 @@ typedef struct
     	AROS_UFCA(struct Hook *, hook, A0), 	     \
 	AROS_UFCA(APTR, object, A2),	    	     \
 	AROS_UFCA(APTR, message, A1),	    	     \
-	AROS_UFCA(APTR, base, A4))	
-#elif defined(__PPC__)
-#ifdef BUILD_POWERUP
-#include <powerup/ppclib/interface.h>
-#define CALLHOOK(hook, object, message, base) \
-({ ULONG ret; \
-	struct Caos MyCaos; \
-	MyCaos.M68kCacheMode = IF_CACHEFLUSHALL; \
-	MyCaos.PPCCacheMode = IF_CACHEFLUSHALL; \
-	MyCaos.a0 = (ULONG) hook; \
-	MyCaos.a2 = (ULONG) object; \
-	MyCaos.a1 = (ULONG) message; \
-	MyCaos.a4 = (ULONG) base; \
-	MyCaos.caos_Un.Function = hook->h_Entry; \
-	ret = PPCCallM68k(&MyCaos); \
-	ret; \
-})
-#elif defined(BUILD_WARPUP)
-#define CALLHOOK(hook, object, message, base) \
-({ ULONG ret; \
-	struct PPCArgs args; \
-	args.PP_Regs[PPREG_A0] = (ULONG)hook; \
-	args.PP_Regs[PPREG_A2] = (ULONG)object; \
-	args.PP_Regs[PPREG_A1] = (ULONG)message; \
-	args.PP_Regs[PPREG_A4] = (ULONG)base; \
-	args.PP_Code = (APTR)hook->h_Entry; \
-	args.PP_Offset = 0; \
-	args.PP_Flags = 0; \
-	args.PP_Stack = NULL; \
-	args.PP_StackSize = 0; \
-	Run68K(&args); \
-	ret = args.PP_Regs[PPREG_D0]; \
-	ret; \
-})
-#elif defined(BUILD_OS4)
-#include <proto/utility.h>
-#define CALLHOOK(hook, object, message, base) \
-({ ULONG ret; \
-	SysBase->EmuWS[48] = base; \
-	ret = CallHookPkt(hook, object, message); \
-	ret; \
-})
-#else
-#include <emul/emulregs.h>
-#include <emul/emulinterface.h>
-#define CALLHOOK(hook, object, message, base) \
-({ ULONG ret; \
-	REG_A0 = (ULONG) hook; \
-	REG_A2 = (ULONG) object; \
-	REG_A1 = (ULONG) message; \
-	REG_A4 = (ULONG) base; \
-	ret = (*MyEmulHandle->EmulCallDirect68k)(hook->h_Entry); \
-	ret; \
-})
-#endif
-#else
-#if 0
-static ULONG ASM MyCallHook(REG(a0, struct Hook *hook), REG(a2, APTR object), REG(a1, APTR message), REG(a4, APTR base))
-{
-	return hook->h_Entry();
-}
-#define CALLHOOK MyCallHook
+	AROS_UFCA(APTR, base, A4))
 #else
 /* 68k hook call. MODERNIZED (gcc 6.x): operand registers (d0/a0/a1/a2/a4)
    removed from the clobber list (gcc 4+ forbids clobbering operand regs),
    and _base is now an explicit a4 input (it was declared but never passed,
-   so a4base was not reliably loaded before the call). Register ABI unchanged. */
+   so a4base was not reliably loaded before the call). Register ABI unchanged.
+   a0 and a1 are in-out ("+r"): the hook may trash them like any AmigaOS
+   function (d0/d1/a0/a1 are scratch), and as plain inputs gcc was free to
+   assume they still held the hook and message pointers after the call. */
 #define CALLHOOK(hook, object, message, base) \
 ({ register ULONG ret __asm("d0"); \
 	register struct Hook *_hook __asm("a0") = hook; \
 	register APTR _object __asm("a2") = object; \
 	register APTR _message __asm("a1") = message; \
 	register APTR _base __asm("a4") = base; \
-	__asm volatile ("movel a0@(8:W),a3\n\t" "jsr a3@" : "=r" (ret) : "r" (_hook), "r" (_object), "r" (_message), "r" (_base) : "d1", "a3", "cc", "memory"); \
+	__asm volatile ("movel a0@(8:W),a3\n\t" "jsr a3@" : "=r" (ret), "+r" (_hook), "+r" (_message) : "r" (_object), "r" (_base) : "d1", "a3", "cc", "memory"); \
 	ret; \
 })
-#endif
 #endif
 
 
@@ -273,9 +206,16 @@ static void ConfigureOutput(MPEGA_STREAM *mpega_stream, MPEGA_OUTPUT *output, De
 	   speed and pitch for the rest of the file. Clearing it here covers every
 	   path at once; anything that genuinely resamples calls resample_init below,
 	   which overwrites this (and zeroes step/last, which are meaningless while
-	   ratio is unity). */
+	   ratio is unity).
+
+	   The libmad options get the same treatment: only the low quality branch
+	   below sets them, so a HALF/QUARTSAMPLERATE (or IGNORECRC) from a low
+	   quality mono configuration survived a switch to a high quality stereo
+	   one and halved the stereo part while dec_frequency claimed the full
+	   rate. SetStreamOptions puts IGNORECRC back whenever quality asks for it. */
 	dechandle->resample[0].ratio = MAD_F_ONE;
 	dechandle->resample[1].ratio = MAD_F_ONE;
+	mad_stream_options(&dechandle->stream, 0);
 
 	if (output->quality == 0)
 	{
@@ -332,13 +272,16 @@ static void ConfigureOutput(MPEGA_STREAM *mpega_stream, MPEGA_OUTPUT *output, De
 							break;
 
 						default:
-							mad_stream_options(&dechandle->stream, 0);
-
-							resample_init(&dechandle->resample[0], mpega_stream->frequency, freq);
+							/* BUGFIX: was resample_init(frequency, freq) with freq
+							   still equal to frequency, a no-op, so freq_max was
+							   ignored whenever it sat between half and all of the
+							   source rate. Resample to it, as the other quality
+							   levels do. */
+							resample_init(&dechandle->resample[0], freq, output->freq_max);
 							if (mpega_stream->dec_channels == 2)
-								resample_init(&dechandle->resample[1], mpega_stream->frequency, freq);
+								resample_init(&dechandle->resample[1], freq, output->freq_max);
 
-							mpega_stream->dec_frequency = freq;
+							mpega_stream->dec_frequency = output->freq_max;
 							break;
 					}
 
@@ -347,7 +290,6 @@ static void ConfigureOutput(MPEGA_STREAM *mpega_stream, MPEGA_OUTPUT *output, De
 				/* Fall through */
 
 			default:
-				mad_stream_options(&dechandle->stream, 0);
 				mpega_stream->dec_frequency = mpega_stream->frequency;
 				break;
 		}
@@ -417,10 +359,8 @@ static __inline void SetStreamOptions(MPEGA_STREAM *mpega_stream, MPEGA_CTRL *ct
 	   configuration depends on nothing else, and re-running it per frame was
 	   destroying the resampler's interpolation state (see ConfigureOutput).
 
-	   The quality/CRC/gain tail below deliberately stays per-frame: it is
-	   idempotent, and folding it into the gate would silently change when
-	   dechandle->gain is reset, which is a separate bug with its own
-	   audible consequences. */
+	   The quality/CRC tail below stays per-frame: it is idempotent, and it puts
+	   back the IGNORECRC that ConfigureOutput clears. */
 	if (mpega_stream->layer     != dechandle->cfg_layer ||
 	    mpega_stream->channels  != dechandle->cfg_channels ||
 	    mpega_stream->frequency != dechandle->cfg_frequency)
@@ -430,6 +370,12 @@ static __inline void SetStreamOptions(MPEGA_STREAM *mpega_stream, MPEGA_CTRL *ct
 		dechandle->cfg_frequency = mpega_stream->frequency;
 
 		ConfigureOutput(mpega_stream, output, dechandle);
+
+		/* This frame was decoded with the OLD options (mad_frame_decode copies
+		   them into frame.options) and synthesis reads that copy, so without
+		   this the first frame after a mono/stereo switch came out at the old
+		   rate under the new dec_frequency. */
+		dechandle->frame.options = dechandle->stream.options;
 	}
 
 #ifdef MPEGA_FORCE_HIFI
@@ -438,15 +384,12 @@ static __inline void SetStreamOptions(MPEGA_STREAM *mpega_stream, MPEGA_CTRL *ct
 	/* FORCED HI-FI: always tolerate broken CRCs so any file plays (CISC's medium-
 	   quality behaviour); quality is forced HIGH above, so this is the robustness half. */
 	dechandle->stream.options |= MAD_OPTION_IGNORECRC;
-
-	if (mpega_stream->dec_quality < 2)
-		dechandle->gain = MAD_F_ONE;
 #else
+	/* BUGFIX: low quality used to reset dechandle->gain to unity on
+	   every frame, so MPEGA_scale returned success and did nothing from the next
+	   frame on, and ReplayGain was dropped. The gain now holds at every quality. */
 	if ((mpega_stream->dec_quality = output->quality) < 2)
-	{
 		dechandle->stream.options |= MAD_OPTION_IGNORECRC;
-		dechandle->gain = MAD_F_ONE;
-	}
 #endif
 }
 
@@ -614,14 +557,29 @@ static LONG InitDecoder(MPEGA_STREAM *mpega_stream, MPEGA_CTRL *ctrl, APTR a4bas
 		bzero(dechandle->buffer, MAD_BUFFER_GUARD);
 		mad_stream_buffer(&dechandle->stream, dechandle->buffer, 0);
 
+		/* BUGFIX: the first read failed and the caller opens anyway
+		   (check_mpeg 0). No tag was skipped and no frame found, so let the
+		   first decodes ride out what comes, as after the open below: they
+		   used to return MPEGA_ERR_NO_SYNC (decode_ref --failfirst). */
+		dechandle->post_seek = 1;
+
 		return 1;
 	}
 
 	dechandle->streamskip = skip = (bytes >= 10) ? CheckID3(dechandle->buffer) : 0;
+	dechandle->size_known = (dechandle->streamsize != 0);
 	if (dechandle->streamsize == 0) dechandle->streamsize = ((bytes > skip) ? (bytes) : (skip));
 
-	/* Ensure that we have something to decode */
-	if (skip + 2000 > (ULONG)bytes)	/* MODERNIZED: avoid unsigned underflow when bytes < 2000 */
+	/* Move what follows an ID3v2 tag to the front of the buffer. BUGFIX: a tag
+	   small enough to stay in the buffer (up to about 6 KB) used to be counted
+	   twice, once here and again in the frame offsets added to streamskip
+	   below: the length came out short and every seek landed late by the tag's
+	   size (6000 bytes: 1662 ms instead of 2037). Now buffer offsets always
+	   start after the tag. Filling the buffer is the loop further down.
+	   BUGFIX: a loop, because some taggers put a new tag in front of the old
+	   one. Only the first was skipped, and with a second one bigger than the
+	   buffer (cover art) no frame turned up and the open failed. */
+	while (skip)
 	{
 		LONG len = 0, size = bytes;
 
@@ -639,19 +597,11 @@ static LONG InitDecoder(MPEGA_STREAM *mpega_stream, MPEGA_CTRL *ctrl, APTR a4bas
 
 			if (size <= 0)
 			{
-				/* BUGFIX: a fork regression. Upstream wrote
-				   "skip > (bytes - 2000)" which, for bytes < 2000, underflowed
-				   to a huge unsigned and was therefore FALSE, so small streams
-				   skipped this whole block and opened fine. The modernized
-				   "skip + 2000 > bytes" is true for them instead, and the
-				   top-up read below then hits EOF and failed the open outright.
-				   Any stream under 2000 bytes stopped working.
-
-				   Reaching EOF here is only fatal if the skip has NOT been
-				   satisfied, that means the tag runs past the end of the
-				   file and there is genuinely nothing to decode. If the skip is
-				   done and we are already holding data, a short file is simply
-				   a short file. */
+				/* BUGFIX: reaching EOF here is only fatal if the
+				   skip has NOT been satisfied, that means the tag runs past
+				   the end of the file and there is genuinely nothing to
+				   decode. If the skip is done and we are already holding
+				   data, a short file is simply a short file. */
 				if (skip == 0 && len > 0) { size = 0; break; }
 
 				return 0;
@@ -684,6 +634,8 @@ static LONG InitDecoder(MPEGA_STREAM *mpega_stream, MPEGA_CTRL *ctrl, APTR a4bas
 		   this is a no-op for them. */
 		bytes = len;
 		if (size > 0) bytes += size;
+
+		dechandle->streamskip += skip = (bytes >= 10) ? CheckID3(dechandle->buffer) : 0;
 	}
 
 	/* Defensive: the buffer is stream_buffer_size + MAD_BUFFER_GUARD, so this
@@ -691,6 +643,19 @@ static LONG InitDecoder(MPEGA_STREAM *mpega_stream, MPEGA_CTRL *ctrl, APTR a4bas
 	   ever does again. */
 	if (bytes < 0) bytes = 0;
 	if (bytes > (LONG)ctrl->stream_buffer_size) bytes = ctrl->stream_buffer_size;
+
+	/* Top up to DEFAULT_BUFFER_SIZE before the first decode. Short reads
+	   (PIPE:, network) used to leave about 2000 bytes, less than two 320 kbit/s
+	   frames, and a stream that starts mid-reservoir needs two or three before
+	   one decodes: the open failed. Not to stream_buffer_size: a player may ask
+	   for 64 KB, and the open then waited for all of it (4 s at 128 kbit/s). */
+	while (bytes < DEFAULT_BUFFER_SIZE)
+	{
+		LONG got = ReadFunc(dechandle, dechandle->buffer + bytes, DEFAULT_BUFFER_SIZE - bytes, a4base);
+
+		if (got <= 0) break;
+		bytes += got;
+	}
 
 	bzero(dechandle->buffer + bytes, MAD_BUFFER_GUARD);
 	mad_stream_buffer(&dechandle->stream, dechandle->buffer, bytes);
@@ -709,7 +674,16 @@ static LONG InitDecoder(MPEGA_STREAM *mpega_stream, MPEGA_CTRL *ctrl, APTR a4bas
 		if (dechandle->stream.error)
 		{
 			mad_stream_options(&dechandle->stream, 0);
-			if (ctrl->check_mpeg || dechandle->streamsize <= (bytes + skip)) return 0;
+			if (ctrl->check_mpeg || dechandle->streamsize <= bytes) return 0;
+
+			/* BUGFIX: no frame in the first buffer, the caller opens anyway
+			   (check_mpeg 0). Same state as the end of a normal open: the
+			   false frames tried above left bytes in the reservoir, and the
+			   junk still ahead used to come back as MPEGA_ERR_NO_SYNC, so a
+			   player that stops on an error played nothing
+			   (tests/fixtures/l3_44_junk.mp3). */
+			dechandle->stream.md_len = 0;
+			dechandle->post_seek = 1;
 
 			return 1;
 		}
@@ -727,11 +701,17 @@ static LONG InitDecoder(MPEGA_STREAM *mpega_stream, MPEGA_CTRL *ctrl, APTR a4bas
 		{
 			struct tag_rgain *rgain = &dechandle->tag.lame.replay_gain[0];
 
-			/*** TODO: Skip Encoder Delay samples when decoding the first frames ***/
-			dechandle->sampleskip = dechandle->tag.lame.start_delay;
+			/*** TODO: Skip Encoder Delay samples (tag.lame.start_delay) when decoding the first frames ***/
 
-			if (dechandle->streamsize <= (bytes+skip) && dechandle->tag.lame.music_length > (bytes+skip))
-				dechandle->streamsize = dechandle->tag.lame.music_length;
+			/* BUGFIX: music_length counts from this frame to the end, so the
+			   ID3v2 tag in front has to be added back. streamskip subtracts it
+			   again, and the length came out short by the tag (200 KB of cover
+			   art: 12.8 s at 128 kbit/s). BUGFIX: used whenever the size is
+			   only a guess; "streamsize <= bytes+skip" compared the guess, the
+			   tag's own size, with the buffer, so a tag bigger than the buffer
+			   kept the guess and a CBR file reported 0 ms. */
+			if (!dechandle->size_known && dechandle->tag.lame.music_length > (bytes+skip))
+				dechandle->streamsize = dechandle->streamskip - (dechandle->stream.next_frame - dechandle->stream.this_frame) + dechandle->tag.lame.music_length;
 
 			if (dechandle->tag.lame.replay_gain[1].name == TAG_RGAIN_NAME_AUDIOPHILE && dechandle->tag.lame.replay_gain[1].originator != TAG_RGAIN_ORIGINATOR_UNSPECIFIED)
 				rgain = &dechandle->tag.lame.replay_gain[1];
@@ -753,45 +733,42 @@ static LONG InitDecoder(MPEGA_STREAM *mpega_stream, MPEGA_CTRL *ctrl, APTR a4bas
 			}
 		}
 
-		if (dechandle->tag.flags & TAG_VBR && dechandle->tag.xing.flags & TAG_XING_FRAMES)
+		/* A zero frame count (header written before the count was known, or a
+		   truncated rip) used to give a 0 ms duration and send every seek to the
+		   99 % TOC entry; fall back to the bitrate estimate instead. */
+		if (dechandle->tag.flags & TAG_VBR && dechandle->tag.xing.flags & TAG_XING_FRAMES && dechandle->tag.xing.frames)
 		{
-			ULONG seconds;
 			mad_timer_t total = dechandle->frame.header.duration;
 
 			mad_timer_multiply(&total, dechandle->tag.xing.frames);
 			mpega_stream->ms_duration = mad_timer_count(total, MAD_UNITS_MILLISECONDS);
-			seconds = ((mpega_stream->ms_duration > 1000) ? (mpega_stream->ms_duration / 1000) : (1));
 
-			if (dechandle->tag.xing.flags & TAG_XING_BYTES)
-			{
-				mpega_stream->bitrate = ((dechandle->tag.xing.bytes / 125) / seconds);
-			} else {
-				mpega_stream->bitrate = ((AudioBytes(dechandle) / 125) / seconds);
-			}
+			/* AudioMs(bytes, ms) is bytes * 8 / ms, i.e. kbit/s. BUGFIX: this was
+			   bytes / 125 / whole seconds rounded down, up to twice too high in a
+			   short file, and a seek without a TOC goes by it. */
+			mpega_stream->bitrate = AudioMs((dechandle->tag.xing.flags & TAG_XING_BYTES)
+				? dechandle->tag.xing.bytes : AudioBytes(dechandle), mpega_stream->ms_duration);
 		}
 		else mpega_stream->ms_duration = AudioMs(AudioBytes(dechandle), mpega_stream->bitrate);
 	} else {
 		skip = dechandle->stream.this_frame - dechandle->buffer;
 		dechandle->streamskip += skip;
-
-		if (dechandle->streamsize)
-		{
-#if 0
-			mad_timer_t total = dechandle->frame.header.duration;
-
-			mad_timer_multiply(&total, ((dechandle->streamsize - dechandle->streamskip) / (dechandle->stream.next_frame - dechandle->stream.this_frame)));
-			mpega_stream->ms_duration = mad_timer_count(total, MAD_UNITS_MILLISECONDS);
-#else
-			/* Was: "(streamsize - streamskip) * 8 / bitrate", with the in-tree
-			   comment "This will overflow on files over 500MB". AudioMs divides
-			   first, so it no longer does; AudioBytes guards the subtraction. */
-			mpega_stream->ms_duration = AudioMs(AudioBytes(dechandle), mpega_stream->bitrate);
-#endif
-		}
+		mpega_stream->ms_duration = AudioMs(AudioBytes(dechandle), mpega_stream->bitrate);
 
 		mad_stream_buffer(&dechandle->stream, dechandle->buffer + skip, bytes - skip);
 		mad_frame_mute(&dechandle->frame);
 	}
+
+	dechandle->open_kbps = mpega_stream->bitrate;
+
+	/* BUGFIX: the frames decoded above left their bytes in the bit reservoir,
+	   which the audio that follows does not own. A file that starts mid-stream
+	   (a track cut without re-encoding, a radio stream through a hook) decoded
+	   its first frames from them: noise without a Xing header, and
+	   MPEGA_ERR_BADFRAME with one. Same cure as after a seek: empty it and let
+	   post_seek ride out the frames whose reservoir lies before the file. */
+	dechandle->stream.md_len = 0;
+	dechandle->post_seek = 1;
 
 	SetStreamOptions(mpega_stream, ctrl, dechandle);
 
@@ -806,7 +783,7 @@ static LONG InitDecoder(MPEGA_STREAM *mpega_stream, MPEGA_CTRL *ctrl, APTR a4bas
  * "handle". These two functions are the whole interface. They are internal:
  * not in the library's function table, so they carry no ABI weight.
  */
-APTR LIBPPC WRAP_MPEGA_get_swapblk(MPEGA_STREAM *mpega_stream)
+APTR WRAP_MPEGA_get_swapblk(MPEGA_STREAM *mpega_stream)
 {
 	if (mpega_stream && mpega_stream->handle)
 		return ((DecHandle *)mpega_stream->handle)->swapblk;
@@ -814,7 +791,7 @@ APTR LIBPPC WRAP_MPEGA_get_swapblk(MPEGA_STREAM *mpega_stream)
 	return NULL;
 }
 
-void LIBPPC WRAP_MPEGA_set_swapblk(MPEGA_STREAM *mpega_stream, APTR blk)
+void WRAP_MPEGA_set_swapblk(MPEGA_STREAM *mpega_stream, APTR blk)
 {
 	if (mpega_stream && mpega_stream->handle)
 		((DecHandle *)mpega_stream->handle)->swapblk = blk;
@@ -846,77 +823,34 @@ static __inline LONG ValidateFrequency(LONG freq)
 	return 48000;
 }
 
-static __inline void ValidateCtrl(MPEGA_CTRL *ctrl)
+static __inline void ValidateOutput(MPEGA_OUTPUT *out)
 {
-	if (ctrl->stream_buffer_size < DEFAULT_BUFFER_SIZE)
-		ctrl->stream_buffer_size = DEFAULT_BUFFER_SIZE;
-
-	if (ctrl->layer_1_2.mono.freq_div < 0)
-		ctrl->layer_1_2.mono.freq_div = 0;
-
-	if (ctrl->layer_1_2.mono.freq_div > 2)
-		ctrl->layer_1_2.mono.freq_div = 4;
-
-	if (ctrl->layer_1_2.mono.quality < 0)
-		ctrl->layer_1_2.mono.quality = 0;
-
-	if (ctrl->layer_1_2.mono.quality > 2)
-		ctrl->layer_1_2.mono.quality = 2;
-
-	if (ctrl->layer_1_2.stereo.freq_div < 0)
-		ctrl->layer_1_2.stereo.freq_div = 0;
-
-	if (ctrl->layer_1_2.stereo.freq_div > 2)
-		ctrl->layer_1_2.stereo.freq_div = 4;
-
-	if (ctrl->layer_1_2.stereo.quality < 0)
-		ctrl->layer_1_2.stereo.quality = 0;
-
-	if (ctrl->layer_1_2.stereo.quality > 2)
-		ctrl->layer_1_2.stereo.quality = 2;
-
-	ctrl->layer_1_2.mono.freq_max = ValidateFrequency(ctrl->layer_1_2.mono.freq_max);
-	ctrl->layer_1_2.stereo.freq_max = ValidateFrequency(ctrl->layer_1_2.stereo.freq_max);
-
-	if (ctrl->layer_3.mono.freq_div < 0)
-		ctrl->layer_3.mono.freq_div = 0;
-
-	if (ctrl->layer_3.mono.freq_div > 2)
-		ctrl->layer_3.mono.freq_div = 4;
-
-	if (ctrl->layer_3.mono.quality < 0)
-		ctrl->layer_3.mono.quality = 0;
-
-	if (ctrl->layer_3.mono.quality > 2)
-		ctrl->layer_3.mono.quality = 2;
-
-	if (ctrl->layer_3.stereo.freq_div < 0)
-		ctrl->layer_3.stereo.freq_div = 0;
-
-	if (ctrl->layer_3.stereo.freq_div > 2)
-		ctrl->layer_3.stereo.freq_div = 4;
-
-	if (ctrl->layer_3.stereo.quality < 0)
-		ctrl->layer_3.stereo.quality = 0;
-
-	if (ctrl->layer_3.stereo.quality > 2)
-		ctrl->layer_3.stereo.quality = 2;
-
-	ctrl->layer_3.mono.freq_max = ValidateFrequency(ctrl->layer_3.mono.freq_max);
-	ctrl->layer_3.stereo.freq_max = ValidateFrequency(ctrl->layer_3.stereo.freq_max);
+	if (out->freq_div < 0) out->freq_div = 0;
+	if (out->freq_div > 2) out->freq_div = 4;
+	if (out->quality < 0) out->quality = 0;
+	if (out->quality > 2) out->quality = 2;
+	out->freq_max = ValidateFrequency(out->freq_max);
 
 #ifdef MPEGA_FORCE_HIFI
 	/* FORCED HI-FI: ignore the caller's quality / freq_div / freq_max, always decode
 	   at full quality and full native bandwidth (no downsampling). force_mono is left
 	   alone (a legitimate channel request, not a fidelity reduction). The bugfix and
 	   plain Hi-Fi variants honour the caller's settings instead. */
-	ctrl->layer_1_2.mono.quality   = ctrl->layer_1_2.stereo.quality = MPEGA_QUALITY_HIGH;
-	ctrl->layer_3.mono.quality     = ctrl->layer_3.stereo.quality   = MPEGA_QUALITY_HIGH;
-	ctrl->layer_1_2.mono.freq_div  = ctrl->layer_1_2.stereo.freq_div = 0;
-	ctrl->layer_3.mono.freq_div    = ctrl->layer_3.stereo.freq_div   = 0;
-	ctrl->layer_1_2.mono.freq_max  = ctrl->layer_1_2.stereo.freq_max = 48000;
-	ctrl->layer_3.mono.freq_max    = ctrl->layer_3.stereo.freq_max   = 48000;
+	out->quality = MPEGA_QUALITY_HIGH;
+	out->freq_div = 0;
+	out->freq_max = 48000;
 #endif
+}
+
+static __inline void ValidateCtrl(MPEGA_CTRL *ctrl)
+{
+	if (ctrl->stream_buffer_size < DEFAULT_BUFFER_SIZE)
+		ctrl->stream_buffer_size = DEFAULT_BUFFER_SIZE;
+
+	ValidateOutput(&ctrl->layer_1_2.mono);
+	ValidateOutput(&ctrl->layer_1_2.stereo);
+	ValidateOutput(&ctrl->layer_3.mono);
+	ValidateOutput(&ctrl->layer_3.stereo);
 }
 
 static __inline LONG OutputPCM(MPEGA_STREAM *mpega_stream, DecHandle *dechandle, WORD *pcm[MPEGA_MAX_CHANNELS])
@@ -1023,7 +957,7 @@ static __inline LONG OutputPCM(MPEGA_STREAM *mpega_stream, DecHandle *dechandle,
 }
 
 
-MPEGA_STREAM * LIBPPC WRAP_MPEGA_open(char *stream_name, MPEGA_CTRL *ctrl, APTR a4base)
+MPEGA_STREAM * WRAP_MPEGA_open(char *stream_name, MPEGA_CTRL *ctrl, APTR a4base)
 {
 	if (ctrl)
 	{
@@ -1037,9 +971,6 @@ MPEGA_STREAM * LIBPPC WRAP_MPEGA_open(char *stream_name, MPEGA_CTRL *ctrl, APTR 
 			{
 				mpega_stream->handle = dechandle;
 
-				dechandle->fh = NULL;
-				dechandle->access = NULL;
-
 				if ((dechandle->ctrl = malloc(sizeof(MPEGA_CTRL))))
 				{
 					bcopy(ctrl, dechandle->ctrl, sizeof(MPEGA_CTRL));
@@ -1052,8 +983,6 @@ MPEGA_STREAM * LIBPPC WRAP_MPEGA_open(char *stream_name, MPEGA_CTRL *ctrl, APTR 
 							if ((dechandle->fh = Open(stream_name, MODE_OLDFILE)))
 							{
 								struct FileInfoBlock *fib;
-
-								dechandle->streamsize = 0;
 
 								if ((fib = malloc(sizeof(struct FileInfoBlock))))
 								{
@@ -1107,7 +1036,8 @@ MPEGA_STREAM * LIBPPC WRAP_MPEGA_open(char *stream_name, MPEGA_CTRL *ctrl, APTR 
 
 							if ((dechandle->fh = CALLHOOK(ctrl->bs_access, NULL, access, a4base)))
 							{
-								dechandle->streamsize = access->data.open.stream_size;
+								/* a hook may say -1 for "unknown"; it is not a 4 GB file */
+								dechandle->streamsize = (access->data.open.stream_size > 0) ? access->data.open.stream_size : 0;
 								if (access->data.open.buffer_size > 0) dechandle->ctrl->stream_buffer_size = access->data.open.buffer_size;
 								if (dechandle->ctrl->stream_buffer_size < DEFAULT_BUFFER_SIZE) dechandle->ctrl->stream_buffer_size = DEFAULT_BUFFER_SIZE;
 
@@ -1146,7 +1076,7 @@ MPEGA_STREAM * LIBPPC WRAP_MPEGA_open(char *stream_name, MPEGA_CTRL *ctrl, APTR 
 	return NULL;
 }
 
-void LIBPPC WRAP_MPEGA_close(MPEGA_STREAM *mpega_stream, APTR a4base)
+void WRAP_MPEGA_close(MPEGA_STREAM *mpega_stream, APTR a4base)
 {
 	if (mpega_stream)
 	{
@@ -1169,9 +1099,9 @@ void LIBPPC WRAP_MPEGA_close(MPEGA_STREAM *mpega_stream, APTR a4base)
 				CALLHOOK(ctrl->bs_access, (APTR)dechandle->fh, access, a4base);
 			}
 
-			if (dechandle->ctrl) free(dechandle->ctrl);
-			if (dechandle->buffer) free(dechandle->buffer);
-			if (dechandle->access) free(dechandle->access);
+			free(dechandle->ctrl);
+			free(dechandle->buffer);
+			free(dechandle->access);
 
 			free(dechandle);
 		}
@@ -1180,7 +1110,69 @@ void LIBPPC WRAP_MPEGA_close(MPEGA_STREAM *mpega_stream, APTR a4base)
 	}
 }
 
-LONG LIBPPC WRAP_MPEGA_decode_frame(MPEGA_STREAM *mpega_stream, WORD *pcm[MPEGA_MAX_CHANNELS], APTR a4base)
+/*
+ * What a MAD_ERROR_LOSTSYNC means. WRAP_MPEGA_decode_frame calls this after
+ * every decode, the ones in its refill loop included. Returns the error to
+ * carry on with.
+ *
+ * BUGFIX: a file that ends in an ID3v1 tag reported MPEGA_ERR_NO_SYNC
+ * instead of a clean end, so a player showed an error at the end of every
+ * normal track. Once a frame has decoded, stream.sync is set, and in that state
+ * mad_header_decode does NOT search for the next sync word: it tests the byte
+ * in front of it and fails immediately (mad/frame.c, the "if (stream->sync)"
+ * arm). An ID3v1 tag begins with 'T', so the first byte of the tag is a hard
+ * LOSTSYNC. If nothing that could start a frame is left in the buffer, this is
+ * trailing metadata rather than a sync error: say BUFLEN and let the refill
+ * read on. At the end it gets nothing, sets eof_flushed and hands over the
+ * guard bytes, and the end-of-stream path reports the clean EOF the caller
+ * was waiting for. Damage in the middle of a file still reports NO_SYNC,
+ * because a sync word is still present further along the buffer.
+ *
+ * BUGFIX: that check ran after the first decode of a call only. With short
+ * reads (a hook, PIPE:, network) the tag can straddle the end of the buffer:
+ * its first part passed the check, the refill read the rest, and the decode in
+ * the refill loop met it unchecked: NO_SYNC again, for 294 of the read sizes
+ * 100..1200 on tests/fixtures/l3_44_stereo_id3v1.mp3.
+ *
+ * BUGFIX: a tag where the next frame should be is skipped. Two files joined
+ * into one (cat a.mp3 b.mp3) have the first one's ID3v1 and the second one's
+ * ID3v2 there, with audio behind them, so the scan found a sync word and a
+ * player that stops on an error played the first file only
+ * (tests/fixtures/l3_44_joined.mp3).
+ */
+static LONG LostSync(DecHandle *dechandle)
+{
+	struct mad_stream *stream = &dechandle->stream;
+	LONG error = MAD_ERROR_LOSTSYNC;
+
+	while (error == MAD_ERROR_LOSTSYNC && !dechandle->eof_flushed)
+	{
+		UBYTE *p = (UBYTE *)stream->this_frame;
+		LONG left = stream->bufend - p;
+		ULONG tag = (left >= 10) ? CheckID3(p) : 0;
+
+		if (!tag && left >= 3 && p[0] == 'T' && p[1] == 'A' && p[2] == 'G') tag = 128;
+
+		if (!tag)
+		{
+			for (p = (UBYTE *)stream->next_frame; p + 1 < stream->bufend; p++)
+				if (p[0] == 0xFF && (p[1] & 0xE0) == 0xE0) return error;
+
+			/* libmad stops at 8 bytes, CheckID3 needs 10: refill from the first
+			   byte of what may be a cut tag header, not from the one after it */
+			if (left < 10) stream->next_frame = stream->this_frame;
+
+			return MAD_ERROR_BUFLEN;
+		}
+
+		mad_stream_skip(stream, tag);
+		error = (mad_frame_decode(&dechandle->frame, stream) == -1) ? stream->error : 0;
+	}
+
+	return error;
+}
+
+LONG WRAP_MPEGA_decode_frame(MPEGA_STREAM *mpega_stream, WORD *pcm[MPEGA_MAX_CHANNELS], APTR a4base)
 {
 	if (mpega_stream && pcm && pcm[0])
 	{
@@ -1190,56 +1182,16 @@ LONG LIBPPC WRAP_MPEGA_decode_frame(MPEGA_STREAM *mpega_stream, WORD *pcm[MPEGA_
 		if (mad_frame_decode(&dechandle->frame, &dechandle->stream) == -1)
 		{
 			LONG error = dechandle->stream.error;
+			LONG tries = 32;	/* post_seek ride-out budget for this call */
 
-			/* BUGFIX: a file that ends in an ID3v1 tag reported
-			   MPEGA_ERR_NO_SYNC instead of a clean end, so a player showed an
-			   error at the end of every normal track.
+			if (error == MAD_ERROR_LOSTSYNC) error = LostSync(dechandle);
 
-			   Once a frame has decoded, stream.sync is set, and in that state
-			   mad_header_decode does NOT search for the next sync word: it
-			   tests the byte in front of it and fails immediately
-			   (mad/frame.c, the "if (stream->sync)" arm). An ID3v1 tag begins
-			   with 'T', so the first byte of the tag is a hard LOSTSYNC.
-
-			   The end-of-stream fix below cannot help, because the tag
-			   arrived as ordinary read data: "got" was positive, so
-			   eof_flushed is still clear and LOSTSYNC falls through to
-			   MPEGA_ERR_NO_SYNC.
-
-			   If nothing that could start a frame is left in the buffer, this
-			   is trailing metadata rather than a sync error. Say BUFLEN
-			   instead and let the refill loop below run: it will read, get
-			   nothing, set eof_flushed and hand over the guard bytes, and the
-			   end-of-stream path then reports the clean EOF the caller was waiting for.
-			   If more data does arrive, decoding simply continues.
-
-			   Deliberately narrow. Damage in the middle of a file still
-			   reports NO_SYNC exactly as before, because a sync word is still
-			   present further along the buffer. Only a run of non-frame bytes
-			   reaching the end of the buffer takes this path. */
-			if (error == MAD_ERROR_LOSTSYNC && !dechandle->eof_flushed)
+			/* The refill and the post_seek ride-out below take turns: riding out
+			   a short buffer (a hook or handler that returns less than a frame
+			   per Read) ends in BUFLEN, which only the refill can answer. It used
+			   to escape as MPEGA_ERR_BADFRAME instead. Bounded by "tries". */
+			do
 			{
-				unsigned char const *scan = dechandle->stream.next_frame;
-				unsigned char const *bufend = dechandle->stream.bufend;
-				LONG framestart = 0;
-
-				if (scan && bufend)
-				{
-					while (scan + 1 < bufend)
-					{
-						if (scan[0] == 0xFF && (scan[1] & 0xE0) == 0xE0)
-						{
-							framestart = 1;
-							break;
-						}
-
-						++scan;
-					}
-				}
-
-				if (!framestart) error = MAD_ERROR_BUFLEN;
-			}
-
 			if (error == MAD_ERROR_BUFLEN)
 			{
 				/* "bufsize" is the buffer's CAPACITY, "got" the number of bytes
@@ -1316,7 +1268,13 @@ LONG LIBPPC WRAP_MPEGA_decode_frame(MPEGA_STREAM *mpega_stream, WORD *pcm[MPEGA_
 
 				got = ReadFunc(dechandle, dechandle->buffer + len, bufsize - len, a4base);
 
-				if (got < 0) return MPEGA_ERR_BADVALUE;
+				if (got < 0)
+				{
+					/* BUGFIX: the residue has moved to the front; point libmad at
+					   it, or a retry decoded from the old offset, now other bytes */
+					mad_stream_buffer(&dechandle->stream, dechandle->buffer, len);
+					return MPEGA_ERR_BADVALUE;
+				}
 
 				if (got == 0)
 				{
@@ -1357,6 +1315,8 @@ LONG LIBPPC WRAP_MPEGA_decode_frame(MPEGA_STREAM *mpega_stream, WORD *pcm[MPEGA_
 
 				if (mad_frame_decode(&dechandle->frame, &dechandle->stream) == -1) error = dechandle->stream.error;
 				else error = 0;
+
+				if (error == MAD_ERROR_LOSTSYNC) error = LostSync(dechandle);
 				}
 			}
 
@@ -1375,12 +1335,10 @@ LONG LIBPPC WRAP_MPEGA_decode_frame(MPEGA_STREAM *mpega_stream, WORD *pcm[MPEGA_
 			       1100 ms this surfaced as MAD_ERROR_BADHUFFDATA (0x0238).
 
 			   Both are transient and both are recoverable errors, so retry until
-			   a frame decodes. Bounded, and BUFLEN is excluded because the
-			   refill loop above owns that case. */
+			   a frame decodes. Bounded, and a BUFLEN goes back to the refill
+			   loop above, which owns that case. */
 			if (error && dechandle->post_seek && MAD_RECOVERABLE(error) && error != MAD_ERROR_BUFLEN)
 			{
-				LONG tries = 32;
-
 				while (tries-- > 0)
 				{
 					dechandle->stream.error = 0;
@@ -1396,6 +1354,7 @@ LONG LIBPPC WRAP_MPEGA_decode_frame(MPEGA_STREAM *mpega_stream, WORD *pcm[MPEGA_
 					if (!MAD_RECOVERABLE(error) || error == MAD_ERROR_BUFLEN) break;
 				}
 			}
+			} while (error == MAD_ERROR_BUFLEN && dechandle->post_seek && tries > 0);
 
 			if (error)
 			{
@@ -1411,15 +1370,12 @@ LONG LIBPPC WRAP_MPEGA_decode_frame(MPEGA_STREAM *mpega_stream, WORD *pcm[MPEGA_
 				{
 					case MAD_ERROR_BUFPTR:
 						return MPEGA_ERR_BADVALUE;
-						break;
 
 					case MAD_ERROR_NOMEM:
 						return MPEGA_ERR_MEM;
-						break;
 
 					case MAD_ERROR_LOSTSYNC:
 						return MPEGA_ERR_NO_SYNC;
-						break;
 
 					case MAD_ERROR_BADBIGVALUES:
 					case MAD_ERROR_BADBLOCKTYPE:
@@ -1435,40 +1391,14 @@ LONG LIBPPC WRAP_MPEGA_decode_frame(MPEGA_STREAM *mpega_stream, WORD *pcm[MPEGA_
 						break;
 #endif
 
-					case MAD_ERROR_BADLAYER:
-					case MAD_ERROR_BADBITRATE:
-					case MAD_ERROR_BADSAMPLERATE:
-					case MAD_ERROR_BADEMPHASIS:
-					case MAD_ERROR_BADCRC:
-					case MAD_ERROR_BADBITALLOC:
-					case MAD_ERROR_BADSCALEFACTOR:
-					case MAD_ERROR_BADMODE:
-					case MAD_ERROR_BADFRAMELEN:
-					case MAD_ERROR_BADDATAPTR:
-					case MAD_ERROR_BADPART3LEN:
-					case MAD_ERROR_BADHUFFTABLE:
-					case MAD_ERROR_BADSTEREO:
-						return MPEGA_ERR_BADFRAME;
-						break;
-
-					/* BUGFIX: BUFLEN had no case of its own and fell
-					   into the default below. MAD_ERROR_BUFLEN is 0x0001, so
-					   "return -error" returned -1, which is MPEGA_ERR_EOF.
-					   A frame still short of data after a refill therefore
-					   reported end of stream, and the player stopped mid-song. */
-					case MAD_ERROR_BUFLEN:
-						return MPEGA_ERR_BADFRAME;
-						break;
-
 					default:
-						/* Never reflect a libmad error code onto the public error
-						   space: MPEGA_ERR_* runs from -1 to -5, so any libmad
-						   code in 0x0001-0x0005 negates onto a completely
-						   unrelated documented error. Every code libmad can
-						   actually produce is handled above; anything new is a
-						   bad frame, not a fabricated EOF or out-of-memory. */
+						/* Every other code is a bad frame. Never reflect a libmad
+						   error code onto the public error space: MPEGA_ERR_* runs
+						   from -1 to -5, and the old "return -error" turned
+						   MAD_ERROR_BUFLEN (0x0001) into MPEGA_ERR_EOF, so a frame
+						   still short of data after a refill stopped the player
+						   mid-song. */
 						return MPEGA_ERR_BADFRAME;
-						break;
 				}
 			}
 		}
@@ -1482,10 +1412,26 @@ LONG LIBPPC WRAP_MPEGA_decode_frame(MPEGA_STREAM *mpega_stream, WORD *pcm[MPEGA_
 		SetStreamValues(mpega_stream, &dechandle->frame.header);
 		SetStreamOptions(mpega_stream, ctrl, dechandle);
 
-		if (dechandle->gain != MAD_F_ONE)
-			gain_filter(dechandle->gain, &dechandle->frame);
-
 		mad_synth_frame(&dechandle->synth, &dechandle->frame);
+
+		/* BUGFIX: the gain (MPEGA_scale, ReplayGain) used to scale the subband
+		   samples before synthesis. In -bugfix (FPM_DEFAULT) synthesis adds 32-bit
+		   numbers without headroom, so output past about twice full scale wrapped
+		   and flipped sign: 400 % on loud music flipped 8.6 % of all samples.
+		   Scaled after synthesis at 64 bits and held at full scale, it clips as
+		   it should in every flavour. */
+		if (dechandle->gain != MAD_F_ONE)
+		{
+			unsigned int ch, i;
+
+			for (ch = 0; ch < dechandle->synth.pcm.channels; ch++)
+				for (i = 0; i < dechandle->synth.pcm.length; i++)
+				{
+					long long v = ((long long)dechandle->synth.pcm.samples[ch][i] * dechandle->gain) >> MAD_F_FRACBITS;
+
+					dechandle->synth.pcm.samples[ch][i] = (v > MAD_F_ONE) ? MAD_F_ONE : (v < -MAD_F_ONE) ? -MAD_F_ONE : (mad_fixed_t)v;
+				}
+		}
 
 		return OutputPCM(mpega_stream, dechandle, pcm);
 	}
@@ -1493,7 +1439,7 @@ LONG LIBPPC WRAP_MPEGA_decode_frame(MPEGA_STREAM *mpega_stream, WORD *pcm[MPEGA_
 	return MPEGA_ERR_BADVALUE;
 }
 
-LONG LIBPPC WRAP_MPEGA_seek(MPEGA_STREAM *mpega_stream, ULONG ms_time_position, APTR a4base)
+LONG WRAP_MPEGA_seek(MPEGA_STREAM *mpega_stream, ULONG ms_time_position, APTR a4base)
 {
 	if (mpega_stream)
 	{
@@ -1501,9 +1447,10 @@ LONG LIBPPC WRAP_MPEGA_seek(MPEGA_STREAM *mpega_stream, ULONG ms_time_position, 
 		MPEGA_CTRL *ctrl = dechandle->ctrl;
 		LONG pos, error;
 
-		ULONG upos, achieved_ms = ms_time_position;
+		ULONG upos, achieved_ms = ms_time_position, kbps = 0;
+		int toc = (dechandle->tag.flags & TAG_VBR) && (dechandle->tag.xing.flags & TAG_XING_TOC);
 
-		if (dechandle->tag.flags & TAG_VBR && dechandle->tag.xing.flags & TAG_XING_TOC)
+		if (toc)
 		{
 			/* BUGFIX: step was "int" and step * toc[i] was signed
 			   arithmetic. step can reach streamsize/256 (about 16.7 million for
@@ -1535,21 +1482,35 @@ LONG LIBPPC WRAP_MPEGA_seek(MPEGA_STREAM *mpega_stream, ULONG ms_time_position, 
 			   request to whole seconds, so everything in 0..999 ms seeked to
 			   byte zero and sub-second scrubbing did nothing at all. Split the
 			   multiply so the milliseconds survive without overflowing ULONG:
-			   bytes_per_second * ms can reach 1.4e12 on a long file. */
-			ULONG bps = (ULONG)mpega_stream->bitrate * 125UL;
+			   bytes_per_second * ms can reach 1.4e12 on a long file.
+
+			   BUGFIX: the bitrate from the open, not mpega_stream->bitrate,
+			   which is the last frame's. In a VBR file without a TOC a seek
+			   landed where that one frame's rate pointed: after silent
+			   32 kbit/s frames, 1500 ms landed at 731 ms of audio
+			   (tests/fixtures/l3_44_notoc.mp3). */
+			ULONG bps;
+
+			kbps = dechandle->open_kbps ? dechandle->open_kbps : mpega_stream->bitrate;
+			bps = kbps * 125UL;
 
 			upos = bps * (ms_time_position / 1000UL)
 			     + (bps * (ms_time_position % 1000UL)) / 1000UL
 			     + dechandle->streamskip;
-
-			achieved_ms = AudioMs(upos - dechandle->streamskip, mpega_stream->bitrate);
 		}
 
 		/* Keep the target inside the stream. dos.doc, dos.library/Seek: "You
-		   cannot Seek() beyond the end of a file." */
+		   cannot Seek() beyond the end of a file." Only against a real size:
+		   the guess InitDecoder makes when none is known is the first buffer,
+		   and limiting to it pulled every seek back into the first 8 KB. */
 		if (upos < dechandle->streamskip) upos = dechandle->streamskip;
-		if (dechandle->streamsize > dechandle->streamskip && upos > dechandle->streamsize)
+		if (dechandle->size_known && dechandle->streamsize > dechandle->streamskip && upos > dechandle->streamsize)
 			upos = dechandle->streamsize;
+
+		/* BUGFIX: the clock from the position actually reached, so after the
+		   limit above. A seek past the end of a file without a TOC used to
+		   report the time asked for (99999 ms in a 2 s file) and then EOF. */
+		if (!toc) achieved_ms = AudioMs(upos - dechandle->streamskip, kbps);
 
 		pos = (LONG)upos;
 
@@ -1586,11 +1547,30 @@ LONG LIBPPC WRAP_MPEGA_seek(MPEGA_STREAM *mpega_stream, ULONG ms_time_position, 
 
 			bytes = ReadFunc(dechandle, dechandle->buffer, ctrl->stream_buffer_size, a4base);
 
-			if (bytes == 0) return MPEGA_ERR_EOF;
-			if (bytes < 0) return MPEGA_ERR_BADVALUE;
+			/* BUGFIX: a failed read used to return here and leave the old
+			   buffer in place; the next decode played it and then spliced in
+			   the new position. Now the state and the clock below are set
+			   either way (the flush just finds no data) and the next decode
+			   refills from here. */
+			error = (bytes == 0) ? MPEGA_ERR_EOF : (bytes < 0) ? MPEGA_ERR_BADVALUE : 0;
+			if (error) bytes = 0;
 
 			bzero(dechandle->buffer + bytes, MAD_BUFFER_GUARD);
 			mad_stream_buffer(&dechandle->stream, dechandle->buffer, bytes);
+
+			/* BUGFIX: mad_stream_buffer keeps md_len, the bit reservoir carried
+			   over from the frames before the seek. Layer III frames right after
+			   the seek then took their main_data from the OLD position: 1-3
+			   frames of garbage after every seek, measured on every fixture.
+			   Empty it, so those frames fail with BADDATAPTR and post_seek rides
+			   them out until the reservoir has refilled from the new position. */
+			dechandle->stream.md_len = 0;
+
+			/* BUGFIX: a tag skip that ran past the end of the file (an ID3v1
+			   tag cut short, see LostSync) is still pending here and would eat
+			   the start of the new position: a player repeating a track lost
+			   two frames of it. */
+			dechandle->stream.skiplen = 0;
 
 			/* There is data ahead of us again, so the end-of-stream guard flush
 			   must be allowed to happen once more. Without this, a
@@ -1645,14 +1625,14 @@ LONG LIBPPC WRAP_MPEGA_seek(MPEGA_STREAM *mpega_stream, ULONG ms_time_position, 
 			   the same sub-second precision it was meant to preserve.) */
 			mad_timer_set(&dechandle->timer, 0, achieved_ms, 1000);
 
-			return 0;
+			return error;
 		}
 	}
 
 	return MPEGA_ERR_BADVALUE;
 }
 
-LONG LIBPPC WRAP_MPEGA_time(MPEGA_STREAM *mpega_stream, ULONG *ms_time_position)
+LONG WRAP_MPEGA_time(MPEGA_STREAM *mpega_stream, ULONG *ms_time_position)
 {
 	if (mpega_stream && ms_time_position)
 	{
@@ -1665,7 +1645,7 @@ LONG LIBPPC WRAP_MPEGA_time(MPEGA_STREAM *mpega_stream, ULONG *ms_time_position)
 	return MPEGA_ERR_BADVALUE;
 }
 
-LONG LIBPPC WRAP_MPEGA_find_sync(UBYTE *buffer, LONG buffer_size)
+LONG WRAP_MPEGA_find_sync(UBYTE *buffer, LONG buffer_size)
 {
 	if (buffer && buffer_size > 75)
 	{
@@ -1683,7 +1663,7 @@ LONG LIBPPC WRAP_MPEGA_find_sync(UBYTE *buffer, LONG buffer_size)
 	return MPEGA_ERR_BADVALUE;
 }
 
-LONG LIBPPC WRAP_MPEGA_scale(MPEGA_STREAM *mpega_stream, LONG scale_percent)
+LONG WRAP_MPEGA_scale(MPEGA_STREAM *mpega_stream, LONG scale_percent)
 {
 	if (mpega_stream)
 	{
@@ -1695,7 +1675,11 @@ LONG LIBPPC WRAP_MPEGA_scale(MPEGA_STREAM *mpega_stream, LONG scale_percent)
 			long long scaled;	/* MODERNIZED: 64-bit avoids signed overflow; old > MAD_F_MAX (==INT_MAX) test was dead */
 
 			if (scale_percent > 800) scale_percent = 800;
-			scaled = (((long long)dechandle->replaygain * scale_percent) / 100) + 1;
+			/* BUGFIX: a "+ 1" here (since 2004) made 100 % a gain of 1.0000000037,
+			   so the gain loop in decode_frame ran at full volume and changed
+			   about a third of the samples by 1-2 LSB. The clamp below keeps the
+			   gain above 0 without it. */
+			scaled = ((long long)dechandle->replaygain * scale_percent) / 100;
 
 			if (scaled > (long long)MAD_F_MAX) dechandle->gain = MAD_F_MAX;
 			else if (scaled < 1) dechandle->gain = ((mad_fixed_t)0x00000001L);
@@ -1707,17 +1691,3 @@ LONG LIBPPC WRAP_MPEGA_scale(MPEGA_STREAM *mpega_stream, LONG scale_percent)
 
 	return MPEGA_ERR_BADVALUE;
 }
-
-#ifdef BUILD_POWERUP
-APTR __LibFuncTable[] =
-{
-	WRAP_MPEGA_open,
-	WRAP_MPEGA_close,
-	WRAP_MPEGA_decode_frame,
-	WRAP_MPEGA_seek,
-	WRAP_MPEGA_time,
-	WRAP_MPEGA_find_sync,
-	WRAP_MPEGA_scale,
-	NULL
-};
-#endif

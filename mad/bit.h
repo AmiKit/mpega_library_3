@@ -45,19 +45,25 @@ struct mad_bitptr {
  *
  * Safe to do here only because libmad is entirely internal to this library:
  * mpega.fd exports the seven MPEGA_* entry points and no mad_* symbol at all,
- * so nothing outside links against these. bit.c compiles the out-of-line
- * copies when the option is off, so the switch is a one-flag revert.
+ * so nothing outside links against these. These bodies are the ONLY copy:
+ * bit.c defines MAD_BIT_DEFINE and includes them as ordinary out-of-line
+ * functions for every file built without the option, so the harness (which
+ * builds without it) tests the same text that Layer III gets inlined.
  *
  * mad_bit_crc keeps its own translation unit either way: it is a loop over a
  * 256-entry table, far too big to inline and not on the hot path.
  */
-# if defined(OPT_INLINE_BITS)
+# if defined(OPT_INLINE_BITS) || defined(MAD_BIT_DEFINE)
 
 /* bit.c pulls this in itself; the other users of bit.h do not, so the header
    has to be self-contained once the bodies live here. */
 #  include <limits.h>
 
-#  define MAD_BIT_INLINE static __inline__
+#  if defined(OPT_INLINE_BITS)
+#   define MAD_BIT_INLINE static __inline__
+#  else
+#   define MAD_BIT_INLINE
+#  endif
 
 MAD_BIT_INLINE
 void mad_bit_init(struct mad_bitptr *bitptr, unsigned char const *byte)

@@ -4,6 +4,11 @@
 # `make` compiles one object with the host cc and dies on -noixemul.
 .DEFAULT_GOAL := all
 
+# The three variants build one after another from the same object files, so
+# they must never run in parallel: "make -j4" left a file named -bugfix that
+# was the Hi-Fi build.
+.NOTPARALLEL:
+
 # Test build marker. "make <target> PHASE=2" stamps " [P2]" into the $VER
 # string so an installed library can be identified with `version LIBS:mpega.library`.
 # Set on the command line it propagates to the recursive sub-makes below.
@@ -27,16 +32,10 @@ PROGNAME = mpega.library
 LIB_SRC = library_init.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
-PUP_SRC = support_pup.c
-PUP_OBJ = $(PUP_SRC:.c=.o)
-
-STARTUP_SRC = startup_pup.c
-STARTUP_OBJ = $(STARTUP_SRC:.c=.o)
-
 WRAP_SRC = support.c wrap_mpega.c
 WRAP_OBJ = $(WRAP_SRC:.c=.o)
 
-MAD_SRC = mad/filter.c mad/resample.c mad/tag.c mad/crc.c mad/fixed.c mad/bit.c mad/timer.c mad/stream.c mad/frame.c mad/synth.c mad/layer12.c mad/layer3.c mad/huffman.c
+MAD_SRC = mad/resample.c mad/tag.c mad/crc.c mad/fixed.c mad/bit.c mad/timer.c mad/stream.c mad/frame.c mad/synth.c mad/layer12.c mad/layer3.c mad/huffman.c
 MAD_OBJ = $(MAD_SRC:.c=.o)
 
 %.o: %.c
@@ -51,18 +50,25 @@ MAD_OBJ = $(MAD_SRC:.c=.o)
 # stack pointer by 12 to "pop" bytes that lived on the swapped-away stack.
 # The following moveml then restores d2/d3/a2-a4/a6 from the wrong slots and
 # rts pops a garbage PC: an immediate crash for any caller with less than
-# STACK_THRESHOLD (8 KB) of stack left, and the AmigaDOS default is 4000.
+# STACK_THRESHOLD (12 KB) of stack left, and the AmigaDOS default is 4000.
 # gcc 2.95 emitted "adda.w #12,sp" between the call and the second swap, which
 # is why the 2004 build was correct and a modern rebuild is not.
 #
-# `make check-stackswap` asserts the generated code still gets this right.
+# Every variant recipe below checks the linked library for it
+# (tests/check_swap_cleanup.py).
 library_init.o: library_init.c
 	$(CC) $(CPP_OPTS) $(CC_OPTS) -fno-defer-pop -c $< -o $@
 
+# support.c is this library's C library, so gcc must not treat malloc, memset
+# and calloc as the built-ins it would call instead: calloc's malloc + memset
+# became a call to calloc itself, an endless recursion on the first open.
+support.o: support.c
+	$(CC) $(CPP_OPTS) $(CC_OPTS) -fno-builtin -c $< -o $@
+
 # `make` with no target builds the three supported 68020 variants. It used to
 # point at the 2004 _PPC and _040 targets, so a bare `make` died on a missing
-# ppc-morphos-gcc. Those targets are still below, kept for reference; see the
-# README for why the PPC ones cannot be built here at all.
+# ppc-morphos-gcc. The PPC, _040 and AROS targets and their sources are gone
+# (never built in this fork); they live on in original-archives/.
 all: $(PROGNAME)_020_all
 
 # Only layer3.c gets the inlined bit reader (see OPT_INLINE_BITS in mad/bit.h).
@@ -79,81 +85,41 @@ mad/layer3.o: mad/layer3.c
 mad/layer12.o: mad/layer12.c
 	$(CC) $(CPP_OPTS) $(CC_OPTS) -Os -c $< -o $@
 
-mad_build: $(MAD_OBJ)
+$(MAD_OBJ): CC_OPTS = $(MAD_OPTS)
 
-mad.stmp:
-	$(MAKE) mad_build "CC_OPTS = \$$(MAD_OPTS)"
-
-$(PROGNAME): $(LIB_OBJ) $(WRAP_OBJ) mad.stmp
-	$(CC) -o $@ $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ) $(ADD_OBJ) $(CC_OPTS)
-
-$(PROGNAME)_ELF: $(LIB_OBJ) $(WRAP_OBJ) mad.stmp
-#	ppc-morphos-ld -r -o $(PROGNAME) $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ)
-	$(CC) $(CC_OPTS) -o $(PROGNAME) $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ)
-
-elfobject.o: $(STARTUP_OBJ) $(WRAP_OBJ)
-	ppc-morphos-ld -r -fl libnix -o elfobject.elf $(STARTUP_OBJ) $(WRAP_OBJ) $(MAD_OBJ) -lc
-	ppc-morphos-strip --strip-unneeded --keep-symbol __LibFuncTable --remove-section .comment elfobject.elf
-	Data2Object elfobject.elf elfobject.o SECTION elf SYMBOL __ElfObject
-
-$(PROGNAME)_PUP: $(LIB_OBJ) $(PUP_OBJ)
-	$(CC) -o $(PROGNAME) $(LIB_OBJ) $(PUP_OBJ) elfobject.o $(CC_OPTS)
+$(PROGNAME): $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ)
+	$(CC) -o $@ $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ) $(CC_OPTS)
 
 # The three 68020 variants share one source tree; see README "Variants".
+# Each recipe deletes the objects FIRST: a build that died half way (Ctrl-C,
+# a failed check) leaves objects compiled with another FPM, and make would
+# happily link them into the next variant because they are newer than the
+# sources. check_swap_cleanup.py inspects the linked library itself, so it
+# catches a lost -fno-defer-pop.
 $(PROGNAME)_020_all: $(PROGNAME)_020_bugfix $(PROGNAME)_020_hifi $(PROGNAME)_020_hifi_forced
 
-$(PROGNAME)_020_bugfix:
-	$(MAKE) $(PROGNAME) "CC = m68k-amigaos-gcc" "CFLAGS = -m68020" "FPM = -DFPM_DEFAULT -DOPT_SPEED -DOPT_SSO"
+# One recipe for the three flavours: $(1) the FPM flags, $(2) the name suffix.
+define build_edition
+	-$(RM) $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ)
+	$(MAKE) $(PROGNAME) "CC = m68k-amigaos-gcc" "CFLAGS = -m68020" "FPM = $(1)"
 	m68k-amigaos-strip --strip-unneeded --remove-section .comment $(PROGNAME)
 	sh tests/check_nofloat.sh $(PROGNAME)
-	-$(MV) $(PROGNAME) $(PROGNAME)-bugfix
+	python3 tests/check_swap_cleanup.py $(PROGNAME)
+	-$(MV) $(PROGNAME) $(PROGNAME)-$(2)
 	-$(RM) $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ)
+endef
+
+$(PROGNAME)_020_bugfix:
+	$(call build_edition,-DFPM_DEFAULT -DOPT_SPEED -DOPT_SSO,bugfix)
 
 $(PROGNAME)_020_hifi:
-	$(MAKE) $(PROGNAME) "CC = m68k-amigaos-gcc" "CFLAGS = -m68020" "FPM = -DFPM_64BIT -DOPT_ACCURACY"
-	m68k-amigaos-strip --strip-unneeded --remove-section .comment $(PROGNAME)
-	sh tests/check_nofloat.sh $(PROGNAME)
-	-$(MV) $(PROGNAME) $(PROGNAME)-hifi
-	-$(RM) $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ)
+	$(call build_edition,-DFPM_64BIT -DOPT_ACCURACY,hifi)
 
 $(PROGNAME)_020_hifi_forced:
-	$(MAKE) $(PROGNAME) "CC = m68k-amigaos-gcc" "CFLAGS = -m68020" "FPM = -DFPM_64BIT -DOPT_ACCURACY -DMPEGA_FORCE_HIFI"
-	m68k-amigaos-strip --strip-unneeded --remove-section .comment $(PROGNAME)
-	sh tests/check_nofloat.sh $(PROGNAME)
-	-$(MV) $(PROGNAME) $(PROGNAME)-hifi-forced
-	-$(RM) $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ)
-
-$(PROGNAME)_040:
-	$(MAKE) $(PROGNAME) "CC = m68k-amigaos-gcc" "CFLAGS = -m68040" "FPM = -DFPM_DEFAULT -DOPT_SPEED -DOPT_SSO"
-#	$(MAKE) $(PROGNAME) "CC = m68k-amigaos-gcc" "CFLAGS = -m68040" "FPM = -DFPM_M68K -DOPT_SPEED -DOPT_SSO"
-	m68k-amigaos-strip --strip-unneeded --remove-section .comment $(PROGNAME)
-	sh tests/check_nofloat.sh $(PROGNAME)
-	-$(MV) $(PROGNAME) $(PROGNAME).040
-	-$(RM) $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ)
-
-$(PROGNAME)_PPC:
-	$(MAKE) $(PROGNAME)_ELF "CC = ppc-morphos-gcc" "CFLAGS = -mcpu=603e -mmultiple" "FPM = -DFPM_PPC -DOPT_ACCURACY -DBUILD_MORPHOS"
-	ppc-morphos-strip --strip-unneeded --remove-section .comment $(PROGNAME)
-	-$(MV) $(PROGNAME) $(PROGNAME).elf
-	-$(RM) $(LIB_OBJ) $(WRAP_OBJ)
-	$(MAKE) elfobject.o "CC = ppc-morphos-gcc" "CFLAGS = -mcpu=603e -mmultiple -I/GCCInclude -I/PPCInclude -I/Include" "FPM = -DFPM_PPC -DOPT_ACCURACY -DBUILD_POWERUP"
-	$(MAKE) $(PROGNAME)_PUP "CC = m68k-amigaos-gcc" "CFLAGS = -m68040" "FPM = -DBUILD_POWERUP"
-	m68k-amigaos-strip --strip-unneeded --remove-section .comment $(PROGNAME)
-	sh tests/check_nofloat.sh $(PROGNAME)
-	-$(MV) $(PROGNAME) $(PROGNAME).pup
-	-$(RM) $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ) $(PUP_OBJ) $(STARTUP_OBJ) elfobject.elf elfobject.o
-
-mpega_68k_os4.o: mpega_68k_os4.S
-	ppc-amigaos-gcc -Wa,-mregnames $< -o $@ -c -I/V/src/kickstart/exec_sg/include
-
-$(PROGNAME)_OS4: mpega_68k_os4.o
-	$(MAKE) $(PROGNAME) "CC = ppc-amigaos-gcc" "CFLAGS = -D__USE_INLINE__ -D__USE_BASETYPE__ -mcpu=604e -mmultiple" "FPM = -DFPM_PPC -DOPT_ACCURACY -DBUILD_OS4 -I/V/include" "ADD_OBJ = mpega_68k_os4.o -lmoto"
-	ppc-amigaos-strip --strip-all --remove-section .comment $(PROGNAME)
-	-$(MV) $(PROGNAME) $(PROGNAME).os4
-	-$(RM) $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ)
+	$(call build_edition,-DFPM_64BIT -DOPT_ACCURACY -DMPEGA_FORCE_HIFI,hifi-forced)
 
 clean:
-	-$(RM) $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ) $(PUP_OBJ) $(STARTUP_OBJ) elfobject.elf elfobject.o mpega_68k_os4.o
+	-$(RM) $(LIB_OBJ) $(WRAP_OBJ) $(MAD_OBJ)
 
 # Regression harness (host build, needs no Amiga toolchain). See tests/README.md.
 check:
@@ -162,12 +128,11 @@ check:
 check-asan:
 	@bash tests/run.sh --asan
 
-# Stack-swap guard: asserts the generated m68k code cleans up the
-# WRAP_* arguments BEFORE swapping back to the caller's stack. Needs amiga-gcc
-# on PATH; FAILS if it is absent, because a guard that passes without compiling
-# anything is worse than no guard. MPEGA_ALLOW_SKIP=1 accepts a skip as a pass.
-check-stackswap:
-	@bash tests/check_stackswap.sh
+# The built flavours under vamos (amitools) against the host decode_ref, byte
+# for byte. Run `make` first. Needs amiga-gcc and vamos; FAILS without them
+# unless MPEGA_ALLOW_SKIP=1. See tests/README.md.
+check-m68k:
+	@bash tests/check_m68k.sh
 
 # Rewrites the committed baselines. ONLY run this on a tree you have verified.
 check-update:
@@ -185,7 +150,7 @@ bench:
 	m68k-amigaos-strip --strip-unneeded --remove-section .comment mpegabench
 	@echo "built: mpegabench  (copy it to the Amiga together with a test MP3)"
 
-.PHONY: all clean check check-asan check-update check-stackswap fixtures bench mad_build \
+.PHONY: all clean check check-asan check-update check-m68k fixtures bench \
         $(PROGNAME)_020_all $(PROGNAME)_020_bugfix $(PROGNAME)_020_hifi \
-        $(PROGNAME)_020_hifi_forced $(PROGNAME)_040 $(PROGNAME)_PPC $(PROGNAME)_OS4
+        $(PROGNAME)_020_hifi_forced
 

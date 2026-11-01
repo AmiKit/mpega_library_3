@@ -31,8 +31,6 @@
 #  define CHAR_BIT  8
 # endif
 
-# include "bit.h"
-
 /*
  * This is the lookup table for computing the CRC-check word.
  * As described in section 2.4.3.1 and depicted in Figure A.9
@@ -81,108 +79,11 @@ unsigned short const crc_table[256] = {
 
 # define CRC_POLY  0x8005
 
-/* With OPT_INLINE_BITS these five live in bit.h as static __inline__ and this
-   whole block is compiled out; see the comment there. mad_bit_crc below is
-   always out of line. */
-# if !defined(OPT_INLINE_BITS)
+/* the one copy of the bit reader lives in bit.h; included after the table
+   so the object keeps the layout it had when the bodies were written here */
+# define MAD_BIT_DEFINE
+# include "bit.h"
 
-/*
- * NAME:	bit->init()
- * DESCRIPTION:	initialize bit pointer struct
- */
-void mad_bit_init(struct mad_bitptr *bitptr, unsigned char const *byte)
-{
-  bitptr->byte  = byte;
-  bitptr->cache = 0;
-  bitptr->left  = CHAR_BIT;
-}
-
-/*
- * NAME:	bit->length()
- * DESCRIPTION:	return number of bits between start and end points
- */
-unsigned int mad_bit_length(struct mad_bitptr const *begin,
-			    struct mad_bitptr const *end)
-{
-  return begin->left +
-    CHAR_BIT * (end->byte - (begin->byte + 1)) + (CHAR_BIT - end->left);
-}
-
-/*
- * NAME:	bit->nextbyte()
- * DESCRIPTION:	return pointer to next unprocessed byte
- */
-unsigned char const *mad_bit_nextbyte(struct mad_bitptr const *bitptr)
-{
-  return bitptr->left == CHAR_BIT ? bitptr->byte : bitptr->byte + 1;
-}
-
-/*
- * NAME:	bit->skip()
- * DESCRIPTION:	advance bit pointer
- */
-void mad_bit_skip(struct mad_bitptr *bitptr, unsigned int len)
-{
-  bitptr->byte += len / CHAR_BIT;
-  bitptr->left -= len % CHAR_BIT;
-
-  if (bitptr->left > CHAR_BIT) {
-    bitptr->byte++;
-    bitptr->left += CHAR_BIT;
-  }
-
-  if (bitptr->left < CHAR_BIT)
-    bitptr->cache = *bitptr->byte;
-}
-
-/*
- * NAME:	bit->read()
- * DESCRIPTION:	read an arbitrary number of bits and return their UIMSBF value
- */
-unsigned long mad_bit_read(struct mad_bitptr *bitptr, unsigned int len)
-{
-  register unsigned long value;
-
-  if (len == 0)
-    return 0;
-
-  if (bitptr->left == CHAR_BIT)
-    bitptr->cache = *bitptr->byte;
-
-  if (len < bitptr->left) {
-    value = (bitptr->cache & ((1 << bitptr->left) - 1)) >>
-      (bitptr->left - len);
-    bitptr->left -= len;
-
-    return value;
-  }
-
-  /* remaining bits in current byte */
-
-  value = bitptr->cache & ((1 << bitptr->left) - 1);
-  len  -= bitptr->left;
-
-  bitptr->byte++;
-  bitptr->left = CHAR_BIT;
-
-  /* more bytes */
-
-  while (len >= CHAR_BIT) {
-    value = (value << CHAR_BIT) | *bitptr->byte++;
-    len  -= CHAR_BIT;
-  }
-
-  if (len > 0) {
-    bitptr->cache = *bitptr->byte;
-
-    value = (value << len) | (bitptr->cache >> (CHAR_BIT - len));
-    bitptr->left -= len;
-  }
-
-  return value;
-}
-
-# endif  /* !OPT_INLINE_BITS */
 
 # if 0
 /*

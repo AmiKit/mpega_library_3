@@ -36,7 +36,7 @@ typedef double             DOUBLE;
 typedef uintptr_t          IPTR;   /* AROS integer-sized pointer */
 
 /* dos.library BPTR is a 32-bit value on AmigaOS, NOT a pointer -- the library
-   assigns a hook's ULONG return straight into it (wrap_mpega.c:802). Keep it
+   assigns a hook's ULONG return straight into it (WRAP_MPEGA_open). Keep it
    32-bit here too, or that assignment warns and the shim stops being faithful.
    amiga_shim.c maps these values to host FILE * through a small table. */
 typedef ULONG              BPTR;
